@@ -1,0 +1,93 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="源文件">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="头文件">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="资源文件">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="include">
+      <UniqueIdentifier>{3b9291ed-598a-40c2-b01b-b71e682528f1}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\common\HdbIpcProtocol.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="..\common\HdbQueryAst.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="HdbDatasetRegistry.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="HdbDbAdapter.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="HdbFieldPathResolver.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="HdbModelCrud.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="HdbPgAdapter.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="HdbQueryExecutor.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="HdbQuerySqlBuilder.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="HdbShardRouter.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ysd_hdb_svr.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\common\HdbIpcProtocol.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\HdbQueryAst.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="HdbCommon.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="HdbDatasetRegistry.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="HdbDbAdapter.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="HdbFieldPathResolver.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="HdbModelCrud.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="HdbModelDef.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="HdbPgAdapter.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="HdbQueryExecutor.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="HdbQuerySqlBuilder.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="HdbShardRouter.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>

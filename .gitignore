@@ -1,0 +1,15 @@
+/.vs
+/AGENTS.md
+/x64
+/Debug
+/Release
+/svr/Debug
+/svr/Release
+/svr/x64
+/svr/ysd_hdb_svr
+/dll/Debug
+/dll/Release
+/dll/x64
+/dll/ysd_hdb_dll
+/tools
+/test
