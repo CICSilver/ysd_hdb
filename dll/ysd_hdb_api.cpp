@@ -9,9 +9,12 @@
 #include "../common/HdbIpcSocket.h"
 #include "../common/HdbQueryAst.h"
 
+#include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include <new>
 #include <string>
 #include <vector>
 
@@ -21,6 +24,7 @@ struct HdbSessionTag
     std::string connInfo;
     std::string ipcHost;
     int ipcPort;
+    unsigned int nextSequence;
     std::string lastError;
 };
 
@@ -37,10 +41,12 @@ struct HdbResultCell
     int isNull;
 };
 
+typedef HdbIpcResultColumn HdbResultColumn;
+
 struct HdbResultTag
 {
     HDB_SESSION session;
-    std::vector<std::string> columns;
+    std::vector<HdbResultColumn> columns;
     std::vector< std::vector<HdbResultCell> > rows;
     int currentRow;
     std::string lastError;
@@ -79,6 +85,23 @@ static void HdbDllSetQueryError(HDB_QUERY query, const char* text)
     HdbDllSetSessionError(query->session, query->lastError.c_str());
 }
 
+static void HdbDllSetResultError(HDB_RESULT result, const char* text)
+{
+    if (result == NULL)
+    {
+        return;
+    }
+    if (text == NULL || text[0] == '\0')
+    {
+        result->lastError = "unknown hdb result error";
+    }
+    else
+    {
+        result->lastError = text;
+    }
+    HdbDllSetSessionError(result->session, result->lastError.c_str());
+}
+
 static int HdbDllCopyText(const std::string& text, char* buffer, int bufferSize, int* requiredSize)
 {
     int required;
@@ -114,7 +137,7 @@ static int HdbDllFindColumn(HDB_RESULT result, const char* outputName)
     }
     for (i = 0; i < (int)result->columns.size(); ++i)
     {
-        if (result->columns[i] == outputName)
+        if (result->columns[i].name == outputName)
         {
             return i;
         }
@@ -122,24 +145,113 @@ static int HdbDllFindColumn(HDB_RESULT result, const char* outputName)
     return -1;
 }
 
-static const HdbResultCell* HdbDllGetCurrentCell(HDB_RESULT result, const char* outputName)
+static int HdbDllGetCurrentCell(HDB_RESULT result,
+    const char* outputName,
+    const HdbResultCell** outCell,
+    int* outFieldType)
 {
     int column;
 
-    if (result == NULL || outputName == NULL)
+    if (result == NULL || outputName == NULL || outCell == NULL || outFieldType == NULL)
     {
-        return NULL;
+        return HDB_ERR_PARAM;
     }
+    *outCell = NULL;
+    *outFieldType = HDB_FT_CHAR_ARRAY;
     if (result->currentRow < 0 || result->currentRow >= (int)result->rows.size())
     {
-        return NULL;
+        HdbDllSetResultError(result, "result cursor is not on row");
+        return HDB_ERR_NO_RECORD;
     }
     column = HdbDllFindColumn(result, outputName);
     if (column < 0 || column >= (int)result->rows[result->currentRow].size())
     {
-        return NULL;
+        HdbDllSetResultError(result, "result field is not found");
+        return HDB_ERR_FIELD_NOT_FOUND;
     }
-    return &result->rows[result->currentRow][column];
+    *outCell = &result->rows[result->currentRow][column];
+    *outFieldType = result->columns[column].fieldType;
+    return HDB_OK;
+}
+
+static int HdbDllIsInt32Type(int fieldType)
+{
+    return fieldType == HDB_FT_INT32 || fieldType == HDB_FT_SMALLINT;
+}
+
+static int HdbDllIsInt64Type(int fieldType)
+{
+    return fieldType == HDB_FT_INT64 || fieldType == HDB_FT_TIMESTAMP_MS;
+}
+
+static int HdbDllIsDoubleType(int fieldType)
+{
+    return fieldType == HDB_FT_DOUBLE;
+}
+
+static int HdbDllIsStringType(int fieldType)
+{
+    return fieldType == HDB_FT_CHAR_ARRAY;
+}
+
+static int HdbDllParseInt32Strict(const char* text, int* value)
+{
+    char* endPtr;
+    long parsed;
+
+    if (text == NULL || text[0] == '\0' || value == NULL)
+    {
+        return HDB_ERR_TYPE_MISMATCH;
+    }
+    errno = 0;
+    endPtr = NULL;
+    parsed = strtol(text, &endPtr, 10);
+    if (errno != 0 || endPtr == NULL || *endPtr != '\0' || parsed < INT_MIN || parsed > INT_MAX)
+    {
+        return HDB_ERR_TYPE_MISMATCH;
+    }
+    *value = (int)parsed;
+    return HDB_OK;
+}
+
+static int HdbDllParseInt64Strict(const char* text, HdbInt64* value)
+{
+    char* endPtr;
+
+    if (text == NULL || text[0] == '\0' || value == NULL)
+    {
+        return HDB_ERR_TYPE_MISMATCH;
+    }
+    errno = 0;
+    endPtr = NULL;
+#ifdef _WIN32
+    *value = (HdbInt64)_strtoi64(text, &endPtr, 10);
+#else
+    *value = (HdbInt64)strtoll(text, &endPtr, 10);
+#endif
+    if (errno != 0 || endPtr == NULL || *endPtr != '\0')
+    {
+        return HDB_ERR_TYPE_MISMATCH;
+    }
+    return HDB_OK;
+}
+
+static int HdbDllParseDoubleStrict(const char* text, double* value)
+{
+    char* endPtr;
+
+    if (text == NULL || text[0] == '\0' || value == NULL)
+    {
+        return HDB_ERR_TYPE_MISMATCH;
+    }
+    errno = 0;
+    endPtr = NULL;
+    *value = strtod(text, &endPtr);
+    if (errno != 0 || endPtr == NULL || *endPtr != '\0')
+    {
+        return HDB_ERR_TYPE_MISMATCH;
+    }
+    return HDB_OK;
 }
 
 static const char* HdbDllReadIpcHost()
@@ -172,15 +284,18 @@ static int HdbDllReadIpcPort()
     return port;
 }
 
-static unsigned int HdbDllNextSequence()
+static unsigned int HdbDllNextSequence(HDB_SESSION session)
 {
-    static unsigned int sequence = 1;
     unsigned int current;
 
-    current = sequence++;
-    if (sequence == 0)
+    if (session == NULL)
     {
-        sequence = 1;
+        return 0;
+    }
+    current = session->nextSequence++;
+    if (session->nextSequence == 0)
+    {
+        session->nextSequence = 1;
     }
     return current;
 }
@@ -198,7 +313,7 @@ static int HdbDllMapIpcError(int ipcError)
 
 static int HdbDllMapResponseStatus(int status)
 {
-    if (status <= HDB_ERR_PARAM && status >= HDB_ERR_NOT_IMPLEMENTED)
+    if (status <= HDB_ERR_PARAM && status >= HDB_ERR_TYPE_MISMATCH)
     {
         return status;
     }
@@ -260,7 +375,7 @@ static int HdbDllRequest(HDB_SESSION session,
     {
         return HDB_ERR_PARAM;
     }
-    sequence = HdbDllNextSequence();
+    sequence = HdbDllNextSequence(session);
     ret = HdbIpcBuildRequest(command,
         sequence,
         body.empty() ? NULL : &body[0],
@@ -317,7 +432,12 @@ static int HdbDllFillResult(HDB_SESSION session, const HdbIpcResultSet& ipcResul
     {
         return HDB_ERR_PARAM;
     }
-    result = new HdbResultTag();
+    result = new(std::nothrow) HdbResultTag();
+    if (result == NULL)
+    {
+        HdbDllSetSessionError(session, "allocate result failed");
+        return HDB_ERR_BUFFER;
+    }
     result->session = session;
     result->columns = ipcResult.columns;
     result->currentRow = -1;
@@ -349,13 +469,18 @@ int HDB_CALL HdbOpen(const char* profileName, HDB_SESSION* outSession)
         return HDB_ERR_PARAM;
     }
     *outSession = NULL;
-    session = new HdbSessionTag();
+    session = new(std::nothrow) HdbSessionTag();
+    if (session == NULL)
+    {
+        return HDB_ERR_BUFFER;
+    }
     if (profileName != NULL)
     {
         session->profileName = profileName;
     }
     session->ipcHost = HdbDllReadIpcHost();
     session->ipcPort = HdbDllReadIpcPort();
+    session->nextSequence = 1;
     *outSession = session;
     return HDB_OK;
 }
@@ -365,17 +490,20 @@ int HDB_CALL HdbOpenByConnInfo(const char* connInfo, HDB_SESSION* outSession)
     HDB_SESSION session;
     int ret;
 
+    if (outSession == NULL)
+    {
+        return HDB_ERR_PARAM;
+    }
+    *outSession = NULL;
+    (void)connInfo;
     ret = HdbOpen("conninfo", &session);
     if (ret != HDB_OK)
     {
         return ret;
     }
-    if (connInfo != NULL)
-    {
-        session->connInfo = connInfo;
-    }
     *outSession = session;
-    return HDB_OK;
+    HdbDllSetSessionError(session, "open by conninfo is not implemented");
+    return HDB_ERR_NOT_IMPLEMENTED;
 }
 
 int HDB_CALL HdbClose(HDB_SESSION session)
@@ -449,7 +577,12 @@ int HDB_CALL HdbQueryCreate(HDB_SESSION session, const char* datasetName, HDB_QU
         return HDB_ERR_PARAM;
     }
     *outQuery = NULL;
-    query = new HdbQueryTag();
+    query = new(std::nothrow) HdbQueryTag();
+    if (query == NULL)
+    {
+        HdbDllSetSessionError(session, "allocate query failed");
+        return HDB_ERR_BUFFER;
+    }
     query->session = session;
     if (query->ast.SetRootDataset(datasetName) != 0)
     {
@@ -621,10 +754,15 @@ int HDB_CALL HdbQueryExecute(HDB_QUERY query, HDB_RESULT* outResult)
     }
     *outResult = NULL;
     ret = query->ast.Serialize(astText);
-    if (ret != 0)
+    if (ret != HDB_OK)
     {
         HdbDllSetQueryError(query, "serialize query ast failed");
-        return HDB_ERR_PARAM;
+        return ret;
+    }
+    if (astText.size() > HDB_IPC_MAX_QUERY_AST_BYTES)
+    {
+        HdbDllSetQueryError(query, "query ast exceeds ipc limit");
+        return HDB_ERR_BUFFER;
     }
     ret = HdbIpcAppendString(body, HDB_IPC_FIELD_QUERY_AST, astText.c_str());
     if (ret != HDB_IPC_OK)
@@ -719,15 +857,17 @@ int HDB_CALL HdbResultNext(HDB_RESULT result, int* hasRow)
 int HDB_CALL HdbResultIsNull(HDB_RESULT result, const char* outputName, int* isNull)
 {
     const HdbResultCell* cell;
+    int fieldType;
+    int ret;
 
     if (result == NULL || outputName == NULL || isNull == NULL)
     {
         return HDB_ERR_PARAM;
     }
-    cell = HdbDllGetCurrentCell(result, outputName);
-    if (cell == NULL)
+    ret = HdbDllGetCurrentCell(result, outputName, &cell, &fieldType);
+    if (ret != HDB_OK)
     {
-        return HDB_ERR_FIELD_NOT_FOUND;
+        return ret;
     }
     *isNull = cell->isNull != 0 ? 1 : 0;
     return HDB_OK;
@@ -736,56 +876,100 @@ int HDB_CALL HdbResultIsNull(HDB_RESULT result, const char* outputName, int* isN
 int HDB_CALL HdbResultGetInt32(HDB_RESULT result, const char* outputName, int* value)
 {
     const HdbResultCell* cell;
+    int fieldType;
+    int ret;
 
     if (value == NULL)
     {
         return HDB_ERR_PARAM;
     }
-    cell = HdbDllGetCurrentCell(result, outputName);
-    if (cell == NULL)
+    ret = HdbDllGetCurrentCell(result, outputName, &cell, &fieldType);
+    if (ret != HDB_OK)
     {
-        return HDB_ERR_FIELD_NOT_FOUND;
+        return ret;
     }
-    *value = atoi(cell->value.c_str());
-    return HDB_OK;
+    if (cell->isNull)
+    {
+        HdbDllSetResultError(result, "result value is null");
+        return HDB_ERR_NULL_VALUE;
+    }
+    if (!HdbDllIsInt32Type(fieldType))
+    {
+        HdbDllSetResultError(result, "result field type is not int32");
+        return HDB_ERR_TYPE_MISMATCH;
+    }
+    ret = HdbDllParseInt32Strict(cell->value.c_str(), value);
+    if (ret != HDB_OK)
+    {
+        HdbDllSetResultError(result, "result int32 parse failed");
+    }
+    return ret;
 }
 
 int HDB_CALL HdbResultGetInt64(HDB_RESULT result, const char* outputName, HdbInt64* value)
 {
     const HdbResultCell* cell;
+    int fieldType;
+    int ret;
 
     if (value == NULL)
     {
         return HDB_ERR_PARAM;
     }
-    cell = HdbDllGetCurrentCell(result, outputName);
-    if (cell == NULL)
+    ret = HdbDllGetCurrentCell(result, outputName, &cell, &fieldType);
+    if (ret != HDB_OK)
     {
-        return HDB_ERR_FIELD_NOT_FOUND;
+        return ret;
     }
-#ifdef _WIN32
-    *value = (HdbInt64)_strtoi64(cell->value.c_str(), NULL, 10);
-#else
-    *value = (HdbInt64)strtoll(cell->value.c_str(), NULL, 10);
-#endif
-    return HDB_OK;
+    if (cell->isNull)
+    {
+        HdbDllSetResultError(result, "result value is null");
+        return HDB_ERR_NULL_VALUE;
+    }
+    if (!HdbDllIsInt64Type(fieldType))
+    {
+        HdbDllSetResultError(result, "result field type is not int64");
+        return HDB_ERR_TYPE_MISMATCH;
+    }
+    ret = HdbDllParseInt64Strict(cell->value.c_str(), value);
+    if (ret != HDB_OK)
+    {
+        HdbDllSetResultError(result, "result int64 parse failed");
+    }
+    return ret;
 }
 
 int HDB_CALL HdbResultGetDouble(HDB_RESULT result, const char* outputName, double* value)
 {
     const HdbResultCell* cell;
+    int fieldType;
+    int ret;
 
     if (value == NULL)
     {
         return HDB_ERR_PARAM;
     }
-    cell = HdbDllGetCurrentCell(result, outputName);
-    if (cell == NULL)
+    ret = HdbDllGetCurrentCell(result, outputName, &cell, &fieldType);
+    if (ret != HDB_OK)
     {
-        return HDB_ERR_FIELD_NOT_FOUND;
+        return ret;
     }
-    *value = atof(cell->value.c_str());
-    return HDB_OK;
+    if (cell->isNull)
+    {
+        HdbDllSetResultError(result, "result value is null");
+        return HDB_ERR_NULL_VALUE;
+    }
+    if (!HdbDllIsDoubleType(fieldType))
+    {
+        HdbDllSetResultError(result, "result field type is not double");
+        return HDB_ERR_TYPE_MISMATCH;
+    }
+    ret = HdbDllParseDoubleStrict(cell->value.c_str(), value);
+    if (ret != HDB_OK)
+    {
+        HdbDllSetResultError(result, "result double parse failed");
+    }
+    return ret;
 }
 
 int HDB_CALL HdbResultGetString(HDB_RESULT result,
@@ -795,11 +979,27 @@ int HDB_CALL HdbResultGetString(HDB_RESULT result,
     int* requiredSize)
 {
     const HdbResultCell* cell;
+    int fieldType;
+    int ret;
 
-    cell = HdbDllGetCurrentCell(result, outputName);
-    if (cell == NULL)
+    ret = HdbDllGetCurrentCell(result, outputName, &cell, &fieldType);
+    if (ret != HDB_OK)
     {
-        return HDB_ERR_FIELD_NOT_FOUND;
+        return ret;
+    }
+    if (cell->isNull)
+    {
+        if (requiredSize != NULL)
+        {
+            *requiredSize = 0;
+        }
+        HdbDllSetResultError(result, "result value is null");
+        return HDB_ERR_NULL_VALUE;
+    }
+    if (!HdbDllIsStringType(fieldType))
+    {
+        HdbDllSetResultError(result, "result field type is not string");
+        return HDB_ERR_TYPE_MISMATCH;
     }
     return HdbDllCopyText(cell->value, buffer, bufferSize, requiredSize);
 }

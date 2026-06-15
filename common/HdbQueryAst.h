@@ -1,17 +1,19 @@
 ﻿#ifndef YSD_HDB_QUERY_AST_H
 #define YSD_HDB_QUERY_AST_H
 
+#include "HdbCommon.h"
+
 #include <string>
 #include <vector>
 
-typedef long long HdbQueryInt64;
+typedef HdbInt64 HdbQueryInt64;
 
 enum HdbQueryValueType
 {
-    HDB_QVT_INT32 = 1, // 32 位整数条件值。
-    HDB_QVT_INT64 = 2, // 64 位整数条件值。
-    HDB_QVT_DOUBLE = 3, // 双精度浮点条件值。
-    HDB_QVT_STRING = 4 // 字符串条件值。
+    HDB_QVT_INT32 = 1, // 32 位整数条件值
+    HDB_QVT_INT64 = 2, // 64 位整数条件值
+    HDB_QVT_DOUBLE = 3, // 双精度浮点条件值
+    HDB_QVT_STRING = 4 // 字符串条件值
 };
 
 struct HdbQuerySelectItem

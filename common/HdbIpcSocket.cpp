@@ -20,6 +20,7 @@ typedef SOCKET HdbNativeSocket;
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <unistd.h>
 typedef int HdbNativeSocket;
@@ -59,6 +60,7 @@ static int HdbIpcGetSocketError()
 #else
 static int HdbIpcSocketStartup()
 {
+    signal(SIGPIPE, SIG_IGN);
     return HDB_IPC_OK;
 }
 
@@ -73,6 +75,15 @@ static void HdbIpcCloseSocket(HdbIpcSocketHandle socketHandle)
 static int HdbIpcGetSocketError()
 {
     return errno;
+}
+
+static int HdbIpcSendFlags()
+{
+#ifdef MSG_NOSIGNAL
+    return MSG_NOSIGNAL;
+#else
+    return 0;
+#endif
 }
 #endif
 
@@ -257,7 +268,15 @@ int CHdbIpcTcpConnection::SendAll(const unsigned char* data, unsigned int length
         int sent;
 
         chunk = (length - offset) > 65536u ? 65536 : (int)(length - offset);
+#ifdef _WIN32
         sent = send((HdbNativeSocket)m_socket, (const char*)(data + offset), chunk, 0);
+#else
+        do
+        {
+            sent = send((HdbNativeSocket)m_socket, (const char*)(data + offset), chunk, HdbIpcSendFlags());
+        }
+        while (sent < 0 && errno == EINTR);
+#endif
         if (sent <= 0)
         {
             SetSocketLastError("send");
@@ -285,7 +304,15 @@ int CHdbIpcTcpConnection::RecvExact(unsigned char* data, unsigned int length)
         int received;
 
         chunk = (length - offset) > 65536u ? 65536 : (int)(length - offset);
+#ifdef _WIN32
         received = recv((HdbNativeSocket)m_socket, (char*)(data + offset), chunk, 0);
+#else
+        do
+        {
+            received = recv((HdbNativeSocket)m_socket, (char*)(data + offset), chunk, 0);
+        }
+        while (received < 0 && errno == EINTR);
+#endif
         if (received == 0)
         {
             SetLastError("socket closed");
@@ -485,10 +512,15 @@ int CHdbIpcTcpServer::Accept(CHdbIpcTcpConnection& connection)
         return HDB_IPC_ERR_BUFFER;
     }
 
-    nativeSocket = accept((HdbNativeSocket)m_listenSocket, NULL, NULL);
 #ifdef _WIN32
+    nativeSocket = accept((HdbNativeSocket)m_listenSocket, NULL, NULL);
     if (nativeSocket == INVALID_SOCKET)
 #else
+    do
+    {
+        nativeSocket = accept((HdbNativeSocket)m_listenSocket, NULL, NULL);
+    }
+    while (nativeSocket < 0 && errno == EINTR);
     if (nativeSocket < 0)
 #endif
     {

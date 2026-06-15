@@ -5,6 +5,7 @@
 #include "HdbQuerySqlBuilder.h"
 
 #include <string>
+#include <vector>
 
 class CHdbQueryExecutor
 {
@@ -13,6 +14,7 @@ public:
 
     int Execute(const CHdbQueryAst& ast, CHdbQueryResult& result);
     const char* GetLastError() const;
+    const std::vector<int>& GetLastOutputTypes() const;
 
 private:
     void SetLastError(const char* text);
@@ -21,6 +23,7 @@ private:
     CHdbDbAdapter* m_adapter;
     const CHdbDatasetRegistry* m_registry;
     std::string m_lastError;
+    std::vector<int> m_lastOutputTypes;
 };
 
 #endif

@@ -81,7 +81,10 @@ static int HdbIpcCodecReadStringAt(const unsigned char* data,
     {
         return ret;
     }
-    if (textLength > length || *offset > length || textLength > length - *offset)
+    if (textLength > HDB_IPC_MAX_RESULT_CELL_BYTES ||
+        textLength > length ||
+        *offset > length ||
+        textLength > length - *offset)
     {
         return HDB_IPC_ERR_FIELD;
     }
@@ -97,7 +100,7 @@ static int HdbIpcCodecAppendString(std::vector<unsigned char>& data, const std::
 {
     int ret;
 
-    if (value.size() > HDB_IPC_MAX_BODY_LENGTH)
+    if (value.size() > HDB_IPC_MAX_RESULT_CELL_BYTES || value.size() > HDB_IPC_MAX_BODY_LENGTH)
     {
         return HDB_IPC_ERR_BODY_SIZE;
     }
@@ -109,12 +112,30 @@ static int HdbIpcCodecAppendString(std::vector<unsigned char>& data, const std::
     return HdbIpcCodecAppendBytes(data, value.empty() ? NULL : value.data(), (unsigned int)value.size());
 }
 
+static int HdbIpcCodecCheckFieldType(int fieldType)
+{
+    if (fieldType == HDB_FT_INT32 ||
+        fieldType == HDB_FT_INT64 ||
+        fieldType == HDB_FT_DOUBLE ||
+        fieldType == HDB_FT_SMALLINT ||
+        fieldType == HDB_FT_CHAR_ARRAY ||
+        fieldType == HDB_FT_TIMESTAMP_MS)
+    {
+        return HDB_IPC_OK;
+    }
+    return HDB_IPC_ERR_FIELD;
+}
+
 int HdbIpcEncodeResultSchema(const HdbIpcResultSet& result, std::vector<unsigned char>& outData)
 {
     unsigned int i;
     int ret;
 
     outData.clear();
+    if (result.columns.size() > HDB_IPC_MAX_RESULT_COLUMNS)
+    {
+        return HDB_IPC_ERR_BODY_SIZE;
+    }
     ret = HdbIpcCodecAppendUInt32(outData, (unsigned int)result.columns.size());
     if (ret != HDB_IPC_OK)
     {
@@ -122,7 +143,16 @@ int HdbIpcEncodeResultSchema(const HdbIpcResultSet& result, std::vector<unsigned
     }
     for (i = 0; i < (unsigned int)result.columns.size(); ++i)
     {
-        ret = HdbIpcCodecAppendString(outData, result.columns[i]);
+        if (HdbIpcCodecCheckFieldType(result.columns[i].fieldType) != HDB_IPC_OK)
+        {
+            return HDB_IPC_ERR_FIELD;
+        }
+        ret = HdbIpcCodecAppendString(outData, result.columns[i].name);
+        if (ret != HDB_IPC_OK)
+        {
+            return ret;
+        }
+        ret = HdbIpcCodecAppendUInt32(outData, (unsigned int)result.columns[i].fieldType);
         if (ret != HDB_IPC_OK)
         {
             return ret;
@@ -151,13 +181,30 @@ int HdbIpcDecodeResultSchema(const void* data, unsigned int length, HdbIpcResult
     {
         return ret;
     }
+    if (count > HDB_IPC_MAX_RESULT_COLUMNS)
+    {
+        return HDB_IPC_ERR_BODY_SIZE;
+    }
     for (i = 0; i < count; ++i)
     {
-        std::string column;
-        ret = HdbIpcCodecReadStringAt(bytes, length, &offset, column);
+        HdbIpcResultColumn column;
+        unsigned int fieldType;
+
+        column.fieldType = HDB_FT_CHAR_ARRAY;
+        ret = HdbIpcCodecReadStringAt(bytes, length, &offset, column.name);
         if (ret != HDB_IPC_OK)
         {
             return ret;
+        }
+        ret = HdbIpcCodecReadUInt32At(bytes, length, &offset, &fieldType);
+        if (ret != HDB_IPC_OK)
+        {
+            return ret;
+        }
+        column.fieldType = (int)fieldType;
+        if (HdbIpcCodecCheckFieldType(column.fieldType) != HDB_IPC_OK)
+        {
+            return HDB_IPC_ERR_FIELD;
         }
         result.columns.push_back(column);
     }
@@ -170,6 +217,10 @@ int HdbIpcEncodeResultRows(const HdbIpcResultSet& result, std::vector<unsigned c
     int ret;
 
     outData.clear();
+    if (result.rows.size() > HDB_IPC_MAX_RESULT_ROWS)
+    {
+        return HDB_IPC_ERR_BODY_SIZE;
+    }
     ret = HdbIpcCodecAppendUInt32(outData, (unsigned int)result.rows.size());
     if (ret != HDB_IPC_OK)
     {
@@ -178,6 +229,11 @@ int HdbIpcEncodeResultRows(const HdbIpcResultSet& result, std::vector<unsigned c
     for (row = 0; row < (unsigned int)result.rows.size(); ++row)
     {
         unsigned int col;
+        if (result.rows[row].size() > HDB_IPC_MAX_RESULT_COLUMNS ||
+            (!result.columns.empty() && result.rows[row].size() != result.columns.size()))
+        {
+            return HDB_IPC_ERR_FIELD;
+        }
         ret = HdbIpcCodecAppendUInt32(outData, (unsigned int)result.rows[row].size());
         if (ret != HDB_IPC_OK)
         {
@@ -220,6 +276,10 @@ int HdbIpcDecodeResultRows(const void* data, unsigned int length, HdbIpcResultSe
     {
         return ret;
     }
+    if (rowCount > HDB_IPC_MAX_RESULT_ROWS)
+    {
+        return HDB_IPC_ERR_BODY_SIZE;
+    }
     for (row = 0; row < rowCount; ++row)
     {
         std::vector<HdbIpcResultCell> cells;
@@ -230,6 +290,14 @@ int HdbIpcDecodeResultRows(const void* data, unsigned int length, HdbIpcResultSe
         if (ret != HDB_IPC_OK)
         {
             return ret;
+        }
+        if (cellCount > HDB_IPC_MAX_RESULT_COLUMNS)
+        {
+            return HDB_IPC_ERR_BODY_SIZE;
+        }
+        if (!result.columns.empty() && cellCount != result.columns.size())
+        {
+            return HDB_IPC_ERR_FIELD;
         }
         for (col = 0; col < cellCount; ++col)
         {
@@ -245,6 +313,10 @@ int HdbIpcDecodeResultRows(const void* data, unsigned int length, HdbIpcResultSe
             if (ret != HDB_IPC_OK)
             {
                 return ret;
+            }
+            if (isNull != 0 && isNull != 1)
+            {
+                return HDB_IPC_ERR_FIELD;
             }
             cell.isNull = isNull != 0 ? 1 : 0;
             cells.push_back(cell);

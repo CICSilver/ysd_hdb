@@ -27,6 +27,9 @@
     <ClCompile Include="..\common\HdbQueryAst.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="..\common\HdbQueryAstCodec.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="dllmain.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -35,6 +38,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\common\HdbCommon.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="..\common\HdbIpcProtocol.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -45,6 +51,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="..\common\HdbQueryAst.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\HdbQueryAstCodec.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ysd_hdb.h">

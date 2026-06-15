@@ -13,6 +13,7 @@ struct HdbBuiltQuery
     std::string sql;
     std::vector<std::string> params;
     std::vector<std::string> outputNames;
+    std::vector<int> outputTypes;
 
     void Clear();
 };
@@ -49,6 +50,7 @@ private:
     int BuildRootSource(const CHdbQueryAst& ast,
         const HdbDatasetDef& rootDataset,
         const std::vector<std::string>& rootColumns,
+        const std::vector<HdbResolvedFieldPath>& wherePaths,
         HdbBuiltQuery& outQuery,
         std::string& outSource);
     int BuildJoins(const std::vector<JoinInfo>& joins, std::string& outSql);

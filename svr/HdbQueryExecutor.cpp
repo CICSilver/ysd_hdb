@@ -16,6 +16,7 @@ int CHdbQueryExecutor::Execute(const CHdbQueryAst& ast, CHdbQueryResult& result)
     int ret;
     int i;
 
+    m_lastOutputTypes.clear();
     if (m_adapter == NULL)
     {
         SetLastError("database adapter is NULL");
@@ -45,12 +46,18 @@ int CHdbQueryExecutor::Execute(const CHdbQueryAst& ast, CHdbQueryResult& result)
     {
         result.SetColumnName(i, query.outputNames[i]);
     }
+    m_lastOutputTypes = query.outputTypes;
     return HDB_OK;
 }
 
 const char* CHdbQueryExecutor::GetLastError() const
 {
     return m_lastError.c_str();
+}
+
+const std::vector<int>& CHdbQueryExecutor::GetLastOutputTypes() const
+{
+    return m_lastOutputTypes;
 }
 
 void CHdbQueryExecutor::SetLastError(const char* text)

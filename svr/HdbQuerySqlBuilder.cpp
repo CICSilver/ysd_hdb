@@ -27,6 +27,7 @@ void HdbBuiltQuery::Clear()
     sql.clear();
     params.clear();
     outputNames.clear();
+    outputTypes.clear();
 }
 
 CHdbQuerySqlBuilder::CHdbQuerySqlBuilder(const CHdbDatasetRegistry* registry)
@@ -86,13 +87,18 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
         SetLastError("day shard query requires time range");
         return HDB_ERR_QUERY_NEED_TIME_RANGE;
     }
+    if (ast.limit > HDB_QUERY_MAX_LIMIT || ast.offset < 0)
+    {
+        SetLastError("query limit exceeds range");
+        return HDB_ERR_QUERY_RANGE;
+    }
 
     ret = ResolveAndCollect(ast, *rootDataset, selectPaths, wherePaths, orderPaths, joins, rootColumns);
     if (ret != HDB_OK)
     {
         return ret;
     }
-    ret = BuildRootSource(ast, *rootDataset, rootColumns, outQuery, sourceSql);
+    ret = BuildRootSource(ast, *rootDataset, rootColumns, wherePaths, outQuery, sourceSql);
     if (ret != HDB_OK)
     {
         return ret;
@@ -128,6 +134,7 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
         }
         sql << expr << " as c" << (i + 1);
         outQuery.outputNames.push_back(ast.selects[i].outputName);
+        outQuery.outputTypes.push_back(selectPaths[i].field->type);
     }
     sql << " from " << sourceSql;
     if (!joinSql.empty())
@@ -143,7 +150,7 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
         sql << " order by " << orderSql;
     }
 
-    limitValue = ast.limit > 0 ? ast.limit : 1000;
+    limitValue = ast.limit > 0 ? ast.limit : HDB_QUERY_DEFAULT_LIMIT;
     limitParam = AddParam(outQuery, IntToString(limitValue));
     offsetParam = AddParam(outQuery, IntToString(ast.offset));
     sql << " limit " << Placeholder(limitParam) << " offset " << Placeholder(offsetParam);
@@ -346,11 +353,13 @@ int CHdbQuerySqlBuilder::FindJoin(const std::vector<JoinInfo>& joins, const char
 int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
     const HdbDatasetDef& rootDataset,
     const std::vector<std::string>& rootColumns,
+    const std::vector<HdbResolvedFieldPath>& wherePaths,
     HdbBuiltQuery& outQuery,
     std::string& outSource)
 {
     std::vector<std::string> tableNames;
     std::ostringstream sql;
+    std::string pushdownWhere;
     size_t i;
     size_t c;
     int ret;
@@ -384,6 +393,32 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
     }
     beginParam = AddParam(outQuery, FormatTimestampMs((HdbInt64)ast.beginMs));
     endParam = AddParam(outQuery, FormatTimestampMs((HdbInt64)ast.endMs));
+    for (i = 0; i < wherePaths.size(); ++i)
+    {
+        const char* opText;
+        int paramIndex;
+
+        if (!wherePaths[i].relations.empty())
+        {
+            continue;
+        }
+        opText = OpToSql(ast.wheres[i].op);
+        if (opText == NULL)
+        {
+            SetLastError("unsupported root compare op");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        paramIndex = AddParam(outQuery, ast.wheres[i].valueText);
+        if (!pushdownWhere.empty())
+        {
+            pushdownWhere += " and ";
+        }
+        pushdownWhere += wherePaths[i].field->columnName;
+        pushdownWhere += " ";
+        pushdownWhere += opText;
+        pushdownWhere += " ";
+        pushdownWhere += Placeholder(paramIndex);
+    }
     sql << "(";
     for (i = 0; i < tableNames.size(); ++i)
     {
@@ -403,6 +438,10 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
         sql << " from " << tableNames[i]
             << " where " << routeField->columnName << " >= " << Placeholder(beginParam)
             << " and " << routeField->columnName << " < " << Placeholder(endParam);
+        if (!pushdownWhere.empty())
+        {
+            sql << " and " << pushdownWhere;
+        }
     }
     sql << ") r";
     outSource = sql.str();
@@ -477,6 +516,10 @@ int CHdbQuerySqlBuilder::BuildWhere(const CHdbQueryAst& ast,
         const char* opText;
         int paramIndex;
 
+        if (rootDataset.shard.shardType == HDB_SHARD_DAY && wherePaths[i].relations.empty())
+        {
+            continue;
+        }
         opText = OpToSql(ast.wheres[i].op);
         if (opText == NULL)
         {

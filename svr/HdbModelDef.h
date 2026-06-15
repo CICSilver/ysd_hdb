@@ -5,23 +5,13 @@
 
 #include <stddef.h>
 
-enum HdbFieldType
-{
-    HDB_FT_INT32 = 1, // 32 位有符号整数，对应数据库 integer/int4。
-    HDB_FT_INT64 = 2, // 64 位有符号整数，对应数据库 bigint/int8。
-    HDB_FT_DOUBLE = 3, // 双精度浮点数，对应数据库 double precision。
-    HDB_FT_SMALLINT = 4, // 16 位有符号整数，对应数据库 smallint/int2。
-    HDB_FT_CHAR_ARRAY = 5, // 固定长度 char 数组，按字符串字段处理。
-    HDB_FT_TIMESTAMP_MS = 6 // 毫秒时间戳，Model 中存 epoch ms，数据库侧按 timestamp 写入。
-};
-
-// 字段标记用于控制字段参与哪些自动生成的 SQL。
+// XXX 字段标记用于控制字段参与哪些自动生成的 SQL
 enum HdbFieldFlag
 {
-    HDB_FIELD_PK = 0x01, // 主键字段，用于 WHERE 条件。
-    HDB_FIELD_INSERT = 0x02, // 参与 INSERT 语句。
-    HDB_FIELD_UPDATE = 0x04, // 参与 UPDATE SET 语句。
-    HDB_FIELD_READONLY = 0x08 // 只读字段，即使可见也不参与 UPDATE。
+    HDB_FIELD_PK = 0x01, // 主键字段，用于 WHERE 条件
+    HDB_FIELD_INSERT = 0x02, // 参与 INSERT 语句
+    HDB_FIELD_UPDATE = 0x04, // 参与 UPDATE SET 语句
+    HDB_FIELD_READONLY = 0x08 // 只读字段，即使可见也不参与 UPDATE
 };
 struct HdbFieldDef
 {
@@ -43,16 +33,16 @@ struct HdbModelDef
 
 enum HdbShardType
 {
-    HDB_SHARD_NONE = 0, // 非分片表，直接访问固定物理表。
-    HDB_SHARD_DAY = 1, // 按日物理表，表名由前缀和 yyyyMMdd 后缀组成。
-    HDB_SHARD_DB_PARTITION = 2 // 数据库原生分区，SERVER 查询父表。
+    HDB_SHARD_NONE = 0, // 非分片表，直接访问固定物理表
+    HDB_SHARD_DAY = 1, // 按日物理表，表名由前缀和 yyyyMMdd 后缀组成
+    HDB_SHARD_DB_PARTITION = 2 // 数据库原生分区，SERVER 查询父表
 };
 
 enum HdbMissingShardPolicy
 {
-    HDB_MISSING_SHARD_IGNORE = 1, // 查询时忽略不存在的分片。
-    HDB_MISSING_SHARD_ERROR = 2, // 查询时遇到缺失分片直接报错。
-    HDB_MISSING_SHARD_CREATE = 3 // 插入时允许由上层创建缺失分片。
+    HDB_MISSING_SHARD_IGNORE = 1, // 当前预留，尚未实现物理表存在性检查
+    HDB_MISSING_SHARD_ERROR = 2, // 查询时遇到缺失分片直接报错
+    HDB_MISSING_SHARD_CREATE = 3 // 插入时允许由上层创建缺失分片
 };
 
 struct HdbShardDef
@@ -72,7 +62,7 @@ struct HdbDatasetDef
     int fieldCount;
     HdbShardDef shard;
 };
-// 字段定义辅助宏。宏只减少重复代码，数据库映射信息仍然显式记录。
+// XXX 字段定义辅助宏只减少重复代码，数据库映射信息仍然显式记录
 #define HDB_FIELD_INT32(model, member, column) \
     { column, column, HDB_FT_INT32, (int)offsetof(model, member), 0, HDB_FIELD_INSERT | HDB_FIELD_UPDATE }
 

@@ -3,10 +3,9 @@
 #endif
 
 #include "HdbQueryAst.h"
+#include "HdbQueryAstCodec.h"
 
 #include <stdio.h>
-#include <stdlib.h>
-
 #include <sstream>
 
 #ifdef _WIN32
@@ -15,35 +14,9 @@
 #define HDB_QUERY_SNPRINTF snprintf
 #endif
 
-static HdbQueryInt64 HdbQueryTextToInt64(const char* text)
-{
-    if (text == NULL)
-    {
-        return 0;
-    }
-#ifdef _WIN32
-    return (HdbQueryInt64)_strtoi64(text, NULL, 10);
-#else
-    return (HdbQueryInt64)strtoll(text, NULL, 10);
-#endif
-}
-
 static int HdbQueryTextEmpty(const char* text)
 {
     return text == NULL || text[0] == '\0';
-}
-
-static int HdbQueryContainsUnsafeChar(const std::string& text)
-{
-    size_t i;
-    for (i = 0; i < text.size(); ++i)
-    {
-        if (text[i] == '\n' || text[i] == '\r' || text[i] == '|')
-        {
-            return 1;
-        }
-    }
-    return 0;
 }
 
 static std::string HdbQueryInt64ToText(HdbQueryInt64 value)
@@ -169,153 +142,14 @@ int CHdbQueryAst::SetLimit(int limitValue, int offsetValue)
 
 int CHdbQueryAst::Serialize(std::string& text) const
 {
-    size_t i;
-    std::ostringstream out;
-
-    if (rootDataset.empty() || HdbQueryContainsUnsafeChar(rootDataset))
-    {
-        return -1;
-    }
-    out << "root=" << rootDataset << "\n";
-    if (hasTimeRange)
-    {
-        out << "time=" << beginMs << "," << endMs << "\n";
-    }
-    for (i = 0; i < selects.size(); ++i)
-    {
-        if (HdbQueryContainsUnsafeChar(selects[i].fieldPath) ||
-            HdbQueryContainsUnsafeChar(selects[i].outputName))
-        {
-            return -1;
-        }
-        out << "select=" << selects[i].fieldPath << "|" << selects[i].outputName << "\n";
-    }
-    for (i = 0; i < wheres.size(); ++i)
-    {
-        if (HdbQueryContainsUnsafeChar(wheres[i].fieldPath) ||
-            HdbQueryContainsUnsafeChar(wheres[i].valueText))
-        {
-            return -1;
-        }
-        out << "where=" << wheres[i].fieldPath << "|"
-            << wheres[i].op << "|"
-            << wheres[i].valueType << "|"
-            << wheres[i].valueText << "\n";
-    }
-    for (i = 0; i < orders.size(); ++i)
-    {
-        if (HdbQueryContainsUnsafeChar(orders[i].fieldPath))
-        {
-            return -1;
-        }
-        out << "order=" << orders[i].fieldPath << "|" << orders[i].orderType << "\n";
-    }
-    out << "limit=" << limit << "," << offset << "\n";
-    text = out.str();
-    return 0;
+    CHdbQueryAstCodec codec;
+    return codec.Encode(*this, text);
 }
 
 int CHdbQueryAst::Deserialize(const char* text)
 {
-    std::string all;
-    std::string line;
-    size_t pos;
-    size_t next;
-
-    if (text == NULL)
-    {
-        return -1;
-    }
-    Clear();
-    all = text;
-    pos = 0;
-    while (pos <= all.size())
-    {
-        next = all.find('\n', pos);
-        if (next == std::string::npos)
-        {
-            line = all.substr(pos);
-            pos = all.size() + 1;
-        }
-        else
-        {
-            line = all.substr(pos, next - pos);
-            pos = next + 1;
-        }
-        if (line.empty())
-        {
-            continue;
-        }
-        if (line.find("root=") == 0)
-        {
-            if (SetRootDataset(line.substr(5).c_str()) != 0)
-            {
-                return -1;
-            }
-        }
-        else if (line.find("time=") == 0)
-        {
-            size_t comma = line.find(',', 5);
-            if (comma == std::string::npos)
-            {
-                return -1;
-            }
-            if (SetTimeRange(HdbQueryTextToInt64(line.substr(5, comma - 5).c_str()),
-                HdbQueryTextToInt64(line.substr(comma + 1).c_str())) != 0)
-            {
-                return -1;
-            }
-        }
-        else if (line.find("select=") == 0)
-        {
-            size_t sep = line.find('|', 7);
-            if (sep == std::string::npos ||
-                AddSelect(line.substr(7, sep - 7).c_str(), line.substr(sep + 1).c_str()) != 0)
-            {
-                return -1;
-            }
-        }
-        else if (line.find("where=") == 0)
-        {
-            size_t p1 = line.find('|', 6);
-            size_t p2 = p1 == std::string::npos ? std::string::npos : line.find('|', p1 + 1);
-            size_t p3 = p2 == std::string::npos ? std::string::npos : line.find('|', p2 + 1);
-            if (p1 == std::string::npos || p2 == std::string::npos || p3 == std::string::npos)
-            {
-                return -1;
-            }
-            if (AddWhereText(line.substr(6, p1 - 6).c_str(),
-                atoi(line.substr(p1 + 1, p2 - p1 - 1).c_str()),
-                atoi(line.substr(p2 + 1, p3 - p2 - 1).c_str()),
-                line.substr(p3 + 1)) != 0)
-            {
-                return -1;
-            }
-        }
-        else if (line.find("order=") == 0)
-        {
-            size_t sep = line.find('|', 6);
-            if (sep == std::string::npos ||
-                AddOrder(line.substr(6, sep - 6).c_str(), atoi(line.substr(sep + 1).c_str())) != 0)
-            {
-                return -1;
-            }
-        }
-        else if (line.find("limit=") == 0)
-        {
-            size_t comma = line.find(',', 6);
-            if (comma == std::string::npos ||
-                SetLimit(atoi(line.substr(6, comma - 6).c_str()), atoi(line.substr(comma + 1).c_str())) != 0)
-            {
-                return -1;
-            }
-        }
-        else
-        {
-            return -1;
-        }
-    }
-    return rootDataset.empty() ? -1 : 0;
+    CHdbQueryAstCodec codec;
+    return codec.Decode(text, *this);
 }
 
 int CHdbQueryAst::AddWhereText(const char* fieldPath, int op, int valueType, const std::string& valueText)
