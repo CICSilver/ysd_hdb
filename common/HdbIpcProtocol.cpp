@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-// TLV 字段中的整数统一按小端写入，避免结构体补齐影响协议内容。
+// TLV 字段中的整数统一按小端写入，避免结构体补齐影响协议内容
 static void HdbIpcWriteUInt32(unsigned char* buffer, unsigned int value)
 {
     buffer[0] = (unsigned char)(value & 0xffu);
@@ -43,7 +43,7 @@ static unsigned long long HdbIpcReadUInt64(const unsigned char* buffer)
 
 static int HdbIpcCheckBodyPointer(const void* body, unsigned int bodyLength)
 {
-    // 空 body 可以传 NULL，非空 body 必须传有效地址。
+    // 空 body 可以传 NULL，非空 body 必须传有效地址
     if (bodyLength > HDB_IPC_MAX_BODY_LENGTH)
     {
         return HDB_IPC_ERR_BODY_SIZE;
@@ -121,7 +121,7 @@ unsigned int HdbIpcCalcChecksum(const void* data, unsigned int length)
     unsigned int i;
 
     bytes = (const unsigned char*)data;
-    // FNV-1a 实现小、结果稳定，用于发现传输过程中的帧体损坏。
+    // FNV-1a 实现小、结果稳定，用于发现传输过程中的帧体损坏
     hash = 2166136261u;
     for (i = 0; i < length; ++i)
     {
@@ -159,7 +159,7 @@ int HdbIpcBuildFrame(unsigned int command,
     }
 
     memset(&header, 0, sizeof(header));
-    // 帧头保持固定长度，命令相关数据全部放入 body。
+    // 帧头保持固定长度，命令相关数据全部放入 body
     header.magic = HDB_IPC_MAGIC;
     header.version = HDB_IPC_VERSION;
     header.headerSize = (unsigned short)sizeof(HdbIpcFrameHeader);
@@ -241,7 +241,7 @@ int HdbIpcGetFrameSize(const unsigned char* data,
     }
 
     memcpy(&header, data, sizeof(header));
-    // 先校验帧头，再信任对端传入的 bodyLength。
+    // 先校验帧头，再信任对端传入的 bodyLength
     if (header.magic != HDB_IPC_MAGIC)
     {
         return HDB_IPC_ERR_MAGIC;
@@ -331,7 +331,7 @@ int HdbIpcAppendField(std::vector<unsigned char>& body,
     }
 
     memset(&header, 0, sizeof(header));
-    // TLV 让可选字段和命令演进相互独立。
+    // TLV 让可选字段和命令演进相互独立
     header.type = type;
     header.flags = 0;
     header.length = length;

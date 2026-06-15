@@ -7,8 +7,8 @@
 
 enum HdbJoinType
 {
-    HDB_JOIN_INNER = 1, // 内连接，右侧无匹配时整行不返回。
-    HDB_JOIN_LEFT = 2 // 左连接，右侧无匹配时右侧字段返回 NULL。
+    HDB_JOIN_INNER = 1, // 内连接，右侧无匹配时整行不返回
+    HDB_JOIN_LEFT = 2 // 左连接，右侧无匹配时右侧字段返回 NULL
 };
 
 struct HdbRelationDef

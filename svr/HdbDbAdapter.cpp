@@ -85,6 +85,20 @@ void CHdbQueryResult::SetColumnName(int field, const std::string& name)
     m_columns[field] = name;
 }
 
+void CHdbQueryResult::SetValue(int row, int field, const std::string& value, int isNull)
+{
+    if (row < 0 || row >= (int)m_rows.size())
+    {
+        return;
+    }
+    if (field < 0 || field >= (int)m_rows[row].size())
+    {
+        return;
+    }
+    m_rows[row][field].value = value;
+    m_rows[row][field].isNull = isNull != 0 ? 1 : 0;
+}
+
 void CHdbQueryResult::AddRow(const std::vector<HdbQueryCell>& row)
 {
     m_rows.push_back(row);

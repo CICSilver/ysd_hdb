@@ -24,6 +24,7 @@ public:
     int IsNull(int row, int field) const;
     void AddColumn(const std::string& name);
     void SetColumnName(int field, const std::string& name);
+    void SetValue(int row, int field, const std::string& value, int isNull);
     void AddRow(const std::vector<HdbQueryCell>& row);
 
 private:

@@ -1,4 +1,4 @@
-﻿// dllmain.cpp : 定义 DLL 应用程序的入口点。
+﻿// dllmain.cpp : 定义 DLL 应用程序的入口点
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 

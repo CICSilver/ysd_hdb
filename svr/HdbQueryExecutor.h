@@ -17,6 +17,7 @@ public:
     const std::vector<int>& GetLastOutputTypes() const;
 
 private:
+    int NormalizeTimestampMsColumns(CHdbQueryResult& result, const std::vector<int>& outputTypes);
     void SetLastError(const char* text);
 
 private:
