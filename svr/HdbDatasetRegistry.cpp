@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <string.h>
 
+// 当前注册表里的模型只用于字段 offset 和测试数据集映射
 struct HdbRegistryAlarmModel
 {
     HdbInt64 id;
@@ -49,6 +50,7 @@ static HdbFieldDef g_hdbRegistryDeviceFields[] =
 
 static HdbDatasetDef g_hdbDatasets[] =
 {
+    // 逻辑数据集到物理表和分片策略的静态注册表
     {
         "alarm",
         sizeof(HdbRegistryAlarmModel),
@@ -74,6 +76,7 @@ static HdbDatasetDef g_hdbDatasets[] =
 
 static HdbRelationDef g_hdbRelations[] =
 {
+    // relation 名称用于字段路径解析，例如 alarm.point.device.name
     { "alarm", "point", "point", "point_id", "id", HDB_JOIN_LEFT },
     { "point", "device", "device", "device_id", "id", HDB_JOIN_LEFT }
 };
@@ -146,6 +149,7 @@ int CHdbDatasetRegistry::ValidateDataset(const HdbDatasetDef& dataset) const
         SetLastError("dataset definition is incomplete");
         return HDB_ERR_DATASET_DEF;
     }
+    // 注册表也要走标识符校验，后续 SQL builder 才能直接使用元数据名
     if (ValidateIdentifier(dataset.datasetName) != HDB_OK)
     {
         return HDB_ERR_DATASET_DEF;
@@ -167,6 +171,7 @@ int CHdbDatasetRegistry::ValidateDataset(const HdbDatasetDef& dataset) const
     }
     else if (dataset.shard.shardType == HDB_SHARD_DAY)
     {
+        // 日分片必须能找到 route 字段，否则无法从时间范围推导物理表
         if (ValidateIdentifier(dataset.shard.tablePrefix) != HDB_OK ||
             FindField(dataset, dataset.shard.routeFieldName) == NULL)
         {

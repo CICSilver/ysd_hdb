@@ -22,6 +22,7 @@ static void HdbHandlerConvertQueryResult(const CHdbQueryResult& queryResult,
     int rowIndex;
     int fieldIndex;
 
+    // SERVER 查询结果转成 IPC 结构时保留输出类型，DLL 读取时再做类型检查
     ipcResult.Clear();
     for (fieldIndex = 0; fieldIndex < queryResult.FieldCount(); ++fieldIndex)
     {
@@ -73,6 +74,7 @@ int CHdbIpcCommandHandler::HandleRequest(const std::vector<unsigned char>& reque
             requestFrame);
         if (ret != HDB_IPC_OK)
         {
+            // 请求帧解析失败时还没有命令号，只能回一个通用 PING 错误响应
             return BuildIpcErrorResponse(HDB_IPC_CMD_PING, 0, HDB_ERR_BUFFER, "invalid ipc frame", responseFrame);
         }
         hasRequestFrame = 1;
@@ -123,6 +125,7 @@ int CHdbIpcCommandHandler::HandleRequest(const std::vector<unsigned char>& reque
 int CHdbIpcCommandHandler::DispatchRequest(const HdbIpcFrame& requestFrame,
     std::vector<unsigned char>& responseFrame)
 {
+    // 分发层只认协议命令，具体 SQL 和数据库访问交给后面的执行器
     if (requestFrame.header.command == HDB_IPC_CMD_PING)
     {
         return HandlePing(requestFrame, responseFrame);
@@ -229,6 +232,7 @@ int CHdbIpcCommandHandler::HandleQueryExecute(const HdbIpcFrame& requestFrame,
         }
         if (field.type == HDB_IPC_FIELD_QUERY_AST)
         {
+            // 请求体只接受 QUERY_AST，SERVER 不信任 DLL 侧生成 SQL
             if (field.length > HDB_IPC_MAX_QUERY_AST_BYTES)
             {
                 return BuildIpcErrorResponse(requestFrame.header.command,
@@ -277,6 +281,7 @@ int CHdbIpcCommandHandler::HandleQueryExecute(const HdbIpcFrame& requestFrame,
             responseFrame);
     }
     HdbHandlerConvertQueryResult(queryResult, executor.GetLastOutputTypes(), ipcResult);
+    // schema 和 rows 分两个 TLV 字段，便于后续分页或游标协议扩展
     ret = HdbIpcEncodeResultSchema(ipcResult, schemaData);
     if (ret != HDB_IPC_OK)
     {
@@ -351,6 +356,7 @@ int CHdbIpcCommandHandler::BuildIpcErrorResponse(unsigned int command,
 
     if (status == HDB_OK)
     {
+        // 错误响应不能带成功码，避免调用方把错误文本当成功结果
         status = HDB_ERR_DB_EXEC;
     }
     ret = HdbIpcAppendString(body, HDB_IPC_FIELD_ERROR_TEXT, errorText == NULL ? "" : errorText);

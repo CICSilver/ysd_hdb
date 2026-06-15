@@ -1,4 +1,4 @@
-#ifndef _CRT_SECURE_NO_WARNINGS
+﻿#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
@@ -20,6 +20,7 @@
 
 struct HdbSessionTag
 {
+    // DLL session 只保存 IPC 连接信息和最近错误，不保存数据库连接
     std::string profileName;
     std::string connInfo;
     std::string ipcHost;
@@ -30,6 +31,7 @@ struct HdbSessionTag
 
 struct HdbQueryTag
 {
+    // query 句柄只累积逻辑查询 AST，真正 SQL 由 SERVER 生成
     HDB_SESSION session;
     CHdbQueryAst ast;
     std::string lastError;
@@ -45,6 +47,7 @@ typedef HdbIpcResultColumn HdbResultColumn;
 
 struct HdbResultTag
 {
+    // result 句柄缓存一次查询返回的完整结果，游标只在 DLL 内移动
     HDB_SESSION session;
     std::vector<HdbResultColumn> columns;
     std::vector< std::vector<HdbResultCell> > rows;
@@ -139,6 +142,7 @@ static int HdbDllCopyText(const std::string& text, char* buffer, int bufferSize,
 {
     int required;
 
+    // C 接口返回字符串时同时告知所需长度，调用方可以二次分配
     required = (int)text.size() + 1;
     if (requiredSize != NULL)
     {
@@ -191,6 +195,7 @@ static int HdbDllGetCurrentCell(HDB_RESULT result,
     }
     *outCell = NULL;
     *outFieldType = HDB_FT_CHAR_ARRAY;
+    // 所有取值接口先走当前行和列名定位，再按字段类型转换
     if (result->currentRow < 0 || result->currentRow >= (int)result->rows.size())
     {
         HdbDllSetResultError(result, "result cursor is not on row");
@@ -328,6 +333,7 @@ static unsigned int HdbDllNextSequence(HDB_SESSION session)
     current = session->nextSequence++;
     if (session->nextSequence == 0)
     {
+        // sequence 用来匹配请求和响应，0 保留不用
         session->nextSequence = 1;
     }
     return current;
@@ -409,6 +415,7 @@ static int HdbDllRequest(HDB_SESSION session,
         return HDB_ERR_PARAM;
     }
     sequence = HdbDllNextSequence(session);
+    // DLL 只把命令和 TLV body 发给 SERVER，不携带 SQL
     ret = HdbIpcBuildRequest(command,
         sequence,
         body.empty() ? NULL : &body[0],
@@ -437,6 +444,7 @@ static int HdbDllRequest(HDB_SESSION session,
         responseFrame.header.command != command ||
         responseFrame.header.sequence != sequence)
     {
+        // 响应必须回到同一个命令和 sequence，避免短连接异常串帧
         HdbDllSetSessionError(session, "invalid ipc response");
         return HDB_ERR_BUFFER;
     }
@@ -471,6 +479,7 @@ static int HdbDllFillResult(HDB_SESSION session, const HdbIpcResultSet& ipcResul
         HdbDllSetSessionError(session, "allocate result failed");
         return HDB_ERR_BUFFER;
     }
+    // IPC result 拷贝到 DLL 自有句柄，responseBytes 释放后仍可遍历
     try
     {
         result->session = session;
@@ -523,6 +532,7 @@ static int HdbOpenImpl(const char* profileName, HDB_SESSION* outSession)
         }
         session->ipcHost = HdbDllReadIpcHost();
         session->ipcPort = HdbDllReadIpcPort();
+        // 当前打开 session 只建立 DLL 侧状态，真实 DB 连接由 SERVER 进程管理
         session->nextSequence = 1;
     }
     catch (...)
@@ -800,6 +810,7 @@ static int HdbQueryExecuteImpl(HDB_QUERY query, HDB_RESULT* outResult)
         return HDB_ERR_PARAM;
     }
     *outResult = NULL;
+    // 执行时把 AST 序列化成文本字段，SERVER 会重新解析和校验
     ret = query->ast.Serialize(astText);
     if (ret != HDB_OK)
     {
@@ -830,6 +841,7 @@ static int HdbQueryExecuteImpl(HDB_QUERY query, HDB_RESULT* outResult)
 
     hasSchema = 0;
     hasRows = 0;
+    // 当前响应按 schema 再 rows 发送，列定义用于行列数校验
     ret = reader.Reset(responseFrame.body, responseFrame.bodyLength);
     if (ret != HDB_IPC_OK)
     {
@@ -1087,6 +1099,7 @@ static int HdbDllReturnResultException(HDB_RESULT result)
     return HDB_ERR_INTERNAL;
 }
 
+// 导出函数不让 C++ 异常穿过 DLL ABI 边界
 int HDB_CALL HdbOpen(const char* profileName, HDB_SESSION* outSession)
 {
     if (outSession != NULL)

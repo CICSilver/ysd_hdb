@@ -156,6 +156,7 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
         return HDB_ERR_QUERY_RANGE;
     }
 
+    // 先把所有字段路径解析出来，后面拼 SQL 时只使用元数据里的表名和列名
     ret = ResolveAndCollect(ast, *rootDataset, selectPaths, wherePaths, orderPaths, joins, rootColumns);
     if (ret != HDB_OK)
     {
@@ -183,6 +184,7 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
     }
 
     sql << "select ";
+    // 对外输出名不直接进入 SQL，SQL 只使用 c1/c2 这类稳定别名
     for (i = 0; i < selectPaths.size(); ++i)
     {
         std::string expr;
@@ -214,6 +216,7 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
     }
 
     limitValue = ast.limit > 0 ? ast.limit : HDB_QUERY_DEFAULT_LIMIT;
+    // limit 和 offset 也走参数，避免调用方输入拼进 SQL
     limitParam = AddParam(outQuery, IntToString(limitValue));
     offsetParam = AddParam(outQuery, IntToString(ast.offset));
     sql << " limit " << Placeholder(limitParam) << " offset " << Placeholder(offsetParam);
@@ -247,6 +250,7 @@ int CHdbQuerySqlBuilder::ResolveAndCollect(const CHdbQueryAst& ast,
             SetLastError("route field is not found");
             return HDB_ERR_SHARD_DEF;
         }
+        // 日分片查询的 root 子查询必须带 route 字段用于时间过滤
         AddRootColumn(rootColumns, routeField->columnName);
     }
 
@@ -354,6 +358,7 @@ int CHdbQuerySqlBuilder::AddRelationJoins(const HdbResolvedFieldPath& path, std:
         join.relation = step.relation;
         join.fromDataset = step.fromDataset;
         join.toDataset = step.toDataset;
+        // 同一个 relation path 只生成一次 JOIN，多个 select/where/order 复用别名
         if (i == 0)
         {
             join.fromAlias = "r";
@@ -431,6 +436,7 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
     const HdbFieldDef* routeField;
 
     outSource.clear();
+    // root source 由分片路由决定，查询层不直接推导物理表名
     ret = m_router.ResolveQueryTables(rootDataset, ast.beginMs, ast.endMs, tableNames);
     if (ret != HDB_OK)
     {
@@ -456,6 +462,7 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
     }
     beginParam = AddParam(outQuery, FormatTimestampMs((HdbInt64)ast.beginMs));
     endParam = AddParam(outQuery, FormatTimestampMs((HdbInt64)ast.endMs));
+    // 对日分片 root 字段的 where 下推到每个分片子查询
     for (i = 0; i < wherePaths.size(); ++i)
     {
         const char* opText;
@@ -490,6 +497,7 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
         pushdownWhere += Placeholder(paramIndex);
     }
     sql << "(";
+    // 日分片按物理表 union all 成 root 别名，后续 JOIN 只面对 r
     for (i = 0; i < tableNames.size(); ++i)
     {
         if (i > 0)
@@ -590,6 +598,7 @@ int CHdbQuerySqlBuilder::BuildWhere(const CHdbQueryAst& ast,
 
         if (rootDataset.shard.shardType == HDB_SHARD_DAY && wherePaths[i].relations.empty())
         {
+            // 已下推到日分片子查询的 root 条件不再重复拼一次
             continue;
         }
         opText = OpToSql(ast.wheres[i].op);
@@ -670,6 +679,7 @@ int CHdbQuerySqlBuilder::AppendFieldExpr(const HdbResolvedFieldPath& path,
         }
         alias = joins[joinIndex].toAlias;
     }
+    // 无 relation 的字段来自 root 别名 r，有 relation 的字段来自最后一级 JOIN
     outExpr = alias;
     outExpr += ".";
     outExpr += path.field->columnName;
@@ -684,6 +694,7 @@ int CHdbQuerySqlBuilder::FormatWhereParamValue(const HdbResolvedFieldPath& path,
     HdbInt64 int64Value;
 
     outValue.clear();
+    // 参数值按字段类型二次校验，SQL builder 是 SERVER 侧最后一道类型边界
     if (path.field == NULL)
     {
         SetLastError("where field is NULL");
@@ -806,6 +817,7 @@ std::string CHdbQuerySqlBuilder::FormatTimestampMs(HdbInt64 value) const
     millis = (int)(value % 1000);
     if (millis < 0)
     {
+        // 负时间戳需要把毫秒余数修正到同一天内的正数
         millis += 1000;
         --seconds;
     }
@@ -866,6 +878,7 @@ int CHdbQuerySqlBuilder::ValidateRelationDataset(const HdbDatasetDef& dataset)
     }
     if (dataset.shard.shardType == HDB_SHARD_DAY)
     {
+        // 当前 JOIN 目标只支持固定表或数据库分区，日分片目标会让别名和分片范围都变复杂
         SetLastError("day sharded relation target is not supported in first query version");
         return HDB_ERR_SHARD_DEF;
     }

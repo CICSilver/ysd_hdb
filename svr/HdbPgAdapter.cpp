@@ -1,5 +1,6 @@
-#include "HdbPgAdapter.h"
+﻿#include "HdbPgAdapter.h"
 
+// PG 细节集中在 adapter，common 和 DLL 不包含 libpq
 #include "libpq-fe.h"
 
 #include <stdlib.h>
@@ -16,6 +17,7 @@ CHdbPgAdapter::~CHdbPgAdapter()
 
 int CHdbPgAdapter::Open(const char* connInfo)
 {
+    // Open 先关闭旧连接，SERVER 侧只保留当前 adapter 连接
     Close();
     m_lastError.clear();
 
@@ -147,6 +149,7 @@ int CHdbPgAdapter::ExecParams(const char* sql,
         return HDB_ERR_NOT_CONNECTED;
     }
 
+    // 所有自动生成 SQL 走参数化执行，参数均按文本传给 libpq
     res = PQexecParams(m_conn, sql, paramCount, NULL, paramValues, NULL, NULL, 0);
     if (res == NULL)
     {
@@ -213,6 +216,7 @@ int CHdbPgAdapter::QueryParams(const char* sql,
         return HDB_ERR_DB_EXEC;
     }
 
+    // 查询结果立即拷贝成通用结构，避免 PGresult 生命周期泄露到上层
     rows = PQntuples(res);
     fields = PQnfields(res);
     for (field = 0; field < fields; ++field)
@@ -246,6 +250,7 @@ int CHdbPgAdapter::QueryParams(const char* sql,
 
 int CHdbPgAdapter::CheckConnected()
 {
+    // 每次执行前检查连接状态，避免上层拿到陈旧连接
     if (m_conn == NULL)
     {
         SetLastError("postgres connection is not open");

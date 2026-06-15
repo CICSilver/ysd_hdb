@@ -39,6 +39,7 @@ int CHdbShardRouter::ResolveInsertTable(const HdbDatasetDef& dataset, const void
         return HDB_ERR_SHARD_DEF;
     }
 
+    // 插入只根据单行 route 字段定位目标表
     ret = ReadRouteTimeMs(dataset, row, &routeTime);
     if (ret != HDB_OK)
     {
@@ -79,6 +80,7 @@ int CHdbShardRouter::ResolveQueryTables(const HdbDatasetDef& dataset,
         return HDB_ERR_QUERY_RANGE;
     }
 
+    // 查询范围是左闭右开，endMs - 1 对应最后一个需要访问的自然日
     dayStart = LocalDayStartMs(beginMs);
     lastDayStart = LocalDayStartMs(endMs - 1);
     guard = 0;
@@ -94,6 +96,7 @@ int CHdbShardRouter::ResolveQueryTables(const HdbDatasetDef& dataset,
         ++guard;
         if (guard > 3660)
         {
+            // 防御异常时间换算导致死循环，也限制一次跨太多年表
             SetLastError("shard time range is too large");
             return HDB_ERR_QUERY_RANGE;
         }
@@ -120,6 +123,7 @@ int CHdbShardRouter::BuildDayTableName(const HdbDatasetDef& dataset, HdbInt64 ti
 
     seconds = (time_t)(timeMs / 1000);
     memset(&tmValue, 0, sizeof(tmValue));
+    // 表后缀按本地日生成，和 LocalDayStartMs 的切日规则保持一致
     if (HdbRouterLocalTime(&tmValue, &seconds) != 0)
     {
         SetLastError("local time conversion failed");
@@ -161,6 +165,7 @@ int CHdbShardRouter::ReadRouteTimeMs(const HdbDatasetDef& dataset, const void* r
             SetLastError("route field is not int64 timestamp");
             return HDB_ERR_SHARD_DEF;
         }
+        // route 字段从调用方结构体 offset 读取，不额外依赖数据库默认值
         *outMs = *((const HdbInt64*)((const char*)row + field.offset));
         return HDB_OK;
     }
@@ -224,6 +229,7 @@ HdbInt64 CHdbShardRouter::NextLocalDayStartMs(HdbInt64 dayStartMs)
     }
     tmValue.tm_mday += 1;
     tmValue.tm_isdst = -1;
+    // 通过 mktime 加一天，保留夏令时等本地时间规则
     return ((HdbInt64)mktime(&tmValue)) * 1000;
 }
 

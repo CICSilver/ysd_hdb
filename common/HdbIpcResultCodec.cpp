@@ -131,6 +131,7 @@ int HdbIpcEncodeResultSchema(const HdbIpcResultSet& result, std::vector<unsigned
     unsigned int i;
     int ret;
 
+    // schema 和 rows 分开编码，DLL 可以先拿到列名和类型再解释行值
     outData.clear();
     if (result.columns.size() > HDB_IPC_MAX_RESULT_COLUMNS)
     {
@@ -208,6 +209,7 @@ int HdbIpcDecodeResultSchema(const void* data, unsigned int length, HdbIpcResult
         }
         result.columns.push_back(column);
     }
+    // 未全部解码，视为协议字段损坏
     return offset == length ? HDB_IPC_OK : HDB_IPC_ERR_FIELD;
 }
 
@@ -217,6 +219,7 @@ int HdbIpcEncodeResultRows(const HdbIpcResultSet& result, std::vector<unsigned c
     int ret;
 
     outData.clear();
+    // 行数据保留 NULL 标记，空字符串和数据库 NULL 不能混在一起
     if (result.rows.size() > HDB_IPC_MAX_RESULT_ROWS)
     {
         return HDB_IPC_ERR_BODY_SIZE;
@@ -327,5 +330,6 @@ int HdbIpcDecodeResultRows(const void* data, unsigned int length, HdbIpcResultSe
         }
         result.rows.push_back(cells);
     }
+    // rows 也要求完全消费，避免尾部垃圾被静默忽略
     return offset == length ? HDB_IPC_OK : HDB_IPC_ERR_FIELD;
 }

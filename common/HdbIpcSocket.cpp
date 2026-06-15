@@ -33,6 +33,7 @@ static int HdbIpcSocketStartup()
     static int started = 0;
     WSADATA data;
 
+    // Windows 只初始化一次 Winsock，避免每次短连接重复启动
     if (started)
     {
         return HDB_IPC_OK;
@@ -202,6 +203,7 @@ int CHdbIpcTcpConnection::RecvFrame(std::vector<unsigned char>& frame)
         return HDB_IPC_ERR_BUFFER;
     }
 
+    // 先读固定帧头，再按 bodyLength 继续收完整 body
     ret = RecvExact((unsigned char*)&header, (unsigned int)sizeof(header));
     if (ret != HDB_IPC_OK)
     {
@@ -268,6 +270,7 @@ int CHdbIpcTcpConnection::SendAll(const unsigned char* data, unsigned int length
         int sent;
 
         chunk = (length - offset) > 65536u ? 65536 : (int)(length - offset);
+        // 大帧分块发送，避免一次 send 传入过大的缓冲区
 #ifdef _WIN32
         sent = send((HdbNativeSocket)m_socket, (const char*)(data + offset), chunk, 0);
 #else
@@ -393,6 +396,7 @@ int CHdbIpcTcpClient::Request(const char* host,
         return HDB_IPC_ERR_BUFFER;
     }
 
+    // CHdbIpcTcpConnection 接管 socket，后续错误统一从连接对象取
     connection.Attach(socketHandle);
     ret = connection.SendFrame(requestFrame);
     if (ret != HDB_IPC_OK)
@@ -477,6 +481,7 @@ int CHdbIpcTcpServer::Open(const char* host, int port, int backlog)
     socketHandle = (HdbIpcSocketHandle)nativeSocket;
 
     reuseValue = 1;
+    // 服务重启后尽量复用本地监听地址
     setsockopt(nativeSocket,
         SOL_SOCKET,
         SO_REUSEADDR,

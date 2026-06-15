@@ -19,6 +19,7 @@ static int HdbQueryCodecContainsUnsafeChar(const std::string& text)
 {
     size_t index;
 
+    // 文本格式用换行和竖线做分隔，这些字符不能进入业务字段
     for (index = 0; index < text.size(); ++index)
     {
         if (text[index] == '\n' || text[index] == '\r' || text[index] == '|')
@@ -39,6 +40,7 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
     size_t index;
     int ret;
 
+    // AST 先做本地格式校验，再生成 SERVER 可重新解析的文本描述
     outText.clear();
     ret = ValidateText(ast.rootDataset, "root dataset");
     if (ret != HDB_OK)
@@ -173,6 +175,7 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
         {
             continue;
         }
+        // 版本行必须先出现，避免旧格式被当成当前格式继续解析
         if (line.find("ast_version=") == 0)
         {
             int version;
@@ -258,6 +261,7 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
             {
                 return HDB_ERR_QUERY_RANGE;
             }
+            // where 值按声明类型重新转一遍，保证 DLL 传来的文本不是宽松格式
             if (valueType == HDB_QVT_INT32)
             {
                 int value;

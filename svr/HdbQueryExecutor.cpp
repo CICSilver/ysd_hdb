@@ -114,6 +114,7 @@ int CHdbQueryExecutor::Execute(const CHdbQueryAst& ast, CHdbQueryResult& result)
         SetLastError("database adapter is NULL");
         return HDB_ERR_PARAM;
     }
+    // executor 是 AST 到数据库执行的唯一入口，DLL 不直接传 SQL
     ret = builder.BuildSelect(ast, query);
     if (ret != HDB_OK)
     {
@@ -125,6 +126,7 @@ int CHdbQueryExecutor::Execute(const CHdbQueryAst& ast, CHdbQueryResult& result)
     {
         params.push_back(query.params[i].c_str());
     }
+    // param 指针引用 query.params 内部字符串，只在本次同步调用内有效
     ret = m_adapter->QueryParams(query.sql.c_str(),
         (int)params.size(),
         params.empty() ? NULL : &params[0],
@@ -134,6 +136,7 @@ int CHdbQueryExecutor::Execute(const CHdbQueryAst& ast, CHdbQueryResult& result)
         SetLastError(m_adapter->GetLastError());
         return ret;
     }
+    // SQL 别名只用于数据库返回，最终列名恢复成调用方指定的 outputName
     for (i = 0; i < result.FieldCount() && i < (int)query.outputNames.size(); ++i)
     {
         result.SetColumnName(i, query.outputNames[i]);
@@ -168,6 +171,7 @@ int CHdbQueryExecutor::NormalizeTimestampMsColumns(CHdbQueryResult& result, cons
         {
             continue;
         }
+        // timestamp 在数据库返回为文本，DLL 侧统一看到 epoch ms 字符串
         for (row = 0; row < result.RowCount(); ++row)
         {
             HdbInt64 ms;

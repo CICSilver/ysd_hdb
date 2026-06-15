@@ -1,4 +1,4 @@
-#include "HdbModelCrud.h"
+﻿#include "HdbModelCrud.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -64,6 +64,7 @@ static std::string HdbFormatTimestampMs(HdbInt64 ms)
     millis = (int)(ms % 1000);
     if (millis < 0)
     {
+        // 负时间戳需要把毫秒余数修正到同一天内的正数
         millis += 1000;
         --seconds;
     }
@@ -103,6 +104,7 @@ static HdbInt64 HdbParseTimestampMs(const char* text)
     year = month = day = hour = minute = second = millis = 0;
     if (sscanf(text, "%d-%d-%d %d:%d:%d.%d", &year, &month, &day, &hour, &minute, &second, &millis) < 6)
     {
+        // 兼容数据库 timestamp 文本和直接写回的 epoch ms 文本
         return HdbStringToInt64(text);
     }
 
@@ -162,6 +164,7 @@ int CHdbModelCrud::InsertModelToTable(const HdbModelDef& def, const char* tableN
         return HDB_ERR_MODEL_DEF;
     }
 
+    // 列名来自 Model 元数据，业务数据只进入参数数组
     sql << "insert into " << tableName << " (";
     paramIndex = 0;
     for (i = 0; i < def.fieldCount; ++i)
@@ -195,6 +198,7 @@ int CHdbModelCrud::InsertModelToTable(const HdbModelDef& def, const char* tableN
     sql << ")";
 
     values.clear();
+    // 第二遍按相同字段顺序生成参数，保持 $1..$n 与列名一一对应
     for (i = 0; i < def.fieldCount; ++i)
     {
         const HdbFieldDef& field = def.fields[i];
@@ -245,6 +249,7 @@ int CHdbModelCrud::UpdateModel(const HdbModelDef& def, const void* model)
     {
         return ret;
     }
+    // 主键和只读字段不进入 SET，只用于 WHERE 或完全跳过
     updateFieldCount = CountFields(def, HDB_FIELD_UPDATE, HDB_FIELD_PK | HDB_FIELD_READONLY);
     if (updateFieldCount <= 0)
     {
@@ -334,6 +339,7 @@ int CHdbModelCrud::DeleteModel(const HdbModelDef& def, const void* model)
         return ret;
     }
 
+    // 删除只能走主键条件，避免误删整表
     sql << "delete from " << def.tableName << " where ";
     paramIndex = 1;
     for (i = 0; i < def.fieldCount; ++i)
@@ -444,6 +450,7 @@ int CHdbModelCrud::SelectModelByPk(const HdbModelDef& def, const void* keyModel,
         return HDB_OK;
     }
 
+    // 查询结果先清空输出结构体，再按字段 offset 写回
     memset(outModel, 0, def.modelSize);
     for (i = 0; i < def.fieldCount; ++i)
     {
@@ -494,6 +501,7 @@ int CHdbModelCrud::ValidateModelDef(const HdbModelDef& def)
         SetLastError("model definition is incomplete");
         return HDB_ERR_MODEL_DEF;
     }
+    // 元数据是自动 SQL 的信任边界，表名、列名和 offset 都在这里收紧
     if (ValidateIdentifier(def.tableName) != HDB_OK)
     {
         return HDB_ERR_MODEL_DEF;
@@ -516,6 +524,7 @@ int CHdbModelCrud::ValidateModelDef(const HdbModelDef& def)
             SetLastError("field offset is out of model range");
             return HDB_ERR_MODEL_DEF;
         }
+        // 非字符串字段按各自实际宽度检查，timestamp/int64 使用最大宽度
         if (field.type != HDB_FT_CHAR_ARRAY && field.offset + (int)sizeof(HdbInt64) > def.modelSize)
         {
             if (field.type == HDB_FT_INT32 && field.offset + (int)sizeof(int) <= def.modelSize)
@@ -610,6 +619,7 @@ int CHdbModelCrud::BuildFieldValue(const HdbFieldDef& field, const void* model, 
     }
 
     base = (const char*)model + field.offset;
+    // 所有字段值转成文本参数交给 libpq，避免直接拼到 SQL
     switch (field.type)
     {
     case HDB_FT_INT32:
@@ -631,9 +641,11 @@ int CHdbModelCrud::BuildFieldValue(const HdbFieldDef& field, const void* model, 
         break;
     case HDB_FT_CHAR_ARRAY:
         text = (const char*)base;
+        // char 数组按声明长度截断读取，不要求调用方一定有结尾零
         value.assign(text, HdbStrnlen(text, (size_t)field.size));
         break;
     case HDB_FT_TIMESTAMP_MS:
+        // Model 内部存 epoch ms，写库时转成本地 timestamp 文本
         value = HdbFormatTimestampMs(*((const HdbInt64*)base));
         break;
     default:
@@ -680,6 +692,7 @@ int CHdbModelCrud::SetFieldValue(const HdbFieldDef& field, void* model, const ch
         copyLen = (int)strlen(value);
         if (copyLen >= field.size)
         {
+            // 写回 char 数组时预留一个结尾零
             copyLen = field.size - 1;
         }
         if (copyLen > 0)
@@ -711,6 +724,7 @@ int CHdbModelCrud::ExecGenerated(const std::string& sql, const std::vector<std::
     {
         params.push_back(values[i].c_str());
     }
+    // values 生命周期覆盖本次调用，param 指针只在 ExecParams 内使用
     return m_adapter->ExecParams(sql.c_str(), (int)params.size(), params.empty() ? NULL : &params[0], affectedRows);
 }
 
@@ -728,6 +742,7 @@ int CHdbModelCrud::QueryGenerated(const std::string& sql, const std::vector<std:
     {
         params.push_back(values[i].c_str());
     }
+    // values 生命周期覆盖本次调用，param 指针只在 QueryParams 内使用
     return m_adapter->QueryParams(sql.c_str(), (int)params.size(), params.empty() ? NULL : &params[0], result);
 }
 
