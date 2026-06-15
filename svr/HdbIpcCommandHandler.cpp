@@ -3,6 +3,7 @@
 #include "HdbQueryExecutor.h"
 #include "../common/HdbIpcResultCodec.h"
 
+#include <new>
 #include <string>
 
 static const unsigned char* HdbHandlerGetVectorBuffer(const std::vector<unsigned char>& data)
@@ -61,8 +62,10 @@ int CHdbIpcCommandHandler::HandleRequest(const std::vector<unsigned char>& reque
     std::vector<unsigned char>& responseFrame)
 {
     HdbIpcFrame requestFrame;
+    int hasRequestFrame;
     int ret;
 
+    hasRequestFrame = 0;
     try
     {
         ret = HdbIpcParseFrame(HdbHandlerGetVectorBuffer(requestBytes),
@@ -72,6 +75,7 @@ int CHdbIpcCommandHandler::HandleRequest(const std::vector<unsigned char>& reque
         {
             return BuildIpcErrorResponse(HDB_IPC_CMD_PING, 0, HDB_ERR_BUFFER, "invalid ipc frame", responseFrame);
         }
+        hasRequestFrame = 1;
         if ((requestFrame.header.flags & HDB_IPC_FLAG_REQUEST) == 0)
         {
             return BuildIpcErrorResponse(requestFrame.header.command,
@@ -82,11 +86,35 @@ int CHdbIpcCommandHandler::HandleRequest(const std::vector<unsigned char>& reque
         }
         return DispatchRequest(requestFrame, responseFrame);
     }
-    catch (...)
+    catch (const std::bad_alloc&)
     {
+        if (hasRequestFrame != 0)
+        {
+            return BuildIpcErrorResponse(requestFrame.header.command,
+                requestFrame.header.sequence,
+                HDB_ERR_BUFFER,
+                "memory allocation failed in ipc handler",
+                responseFrame);
+        }
         return BuildIpcErrorResponse(HDB_IPC_CMD_PING,
             0,
             HDB_ERR_BUFFER,
+            "memory allocation failed in ipc handler",
+            responseFrame);
+    }
+    catch (...)
+    {
+        if (hasRequestFrame != 0)
+        {
+            return BuildIpcErrorResponse(requestFrame.header.command,
+                requestFrame.header.sequence,
+                HDB_ERR_INTERNAL,
+                "unhandled exception in ipc handler",
+                responseFrame);
+        }
+        return BuildIpcErrorResponse(HDB_IPC_CMD_PING,
+            0,
+            HDB_ERR_INTERNAL,
             "unhandled exception in ipc handler",
             responseFrame);
     }

@@ -1,4 +1,4 @@
-﻿#ifndef _CRT_SECURE_NO_WARNINGS
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
@@ -100,6 +100,39 @@ static void HdbDllSetResultError(HDB_RESULT result, const char* text)
         result->lastError = text;
     }
     HdbDllSetSessionError(result->session, result->lastError.c_str());
+}
+
+static void HdbDllTrySetSessionError(HDB_SESSION session, const char* text)
+{
+    try
+    {
+        HdbDllSetSessionError(session, text);
+    }
+    catch (...)
+    {
+    }
+}
+
+static void HdbDllTrySetQueryError(HDB_QUERY query, const char* text)
+{
+    try
+    {
+        HdbDllSetQueryError(query, text);
+    }
+    catch (...)
+    {
+    }
+}
+
+static void HdbDllTrySetResultError(HDB_RESULT result, const char* text)
+{
+    try
+    {
+        HdbDllSetResultError(result, text);
+    }
+    catch (...)
+    {
+    }
 }
 
 static int HdbDllCopyText(const std::string& text, char* buffer, int bufferSize, int* requiredSize)
@@ -313,7 +346,7 @@ static int HdbDllMapIpcError(int ipcError)
 
 static int HdbDllMapResponseStatus(int status)
 {
-    if (status <= HDB_ERR_PARAM && status >= HDB_ERR_TYPE_MISMATCH)
+    if (status <= HDB_ERR_PARAM && status >= HDB_ERR_INTERNAL)
     {
         return status;
     }
@@ -438,29 +471,37 @@ static int HdbDllFillResult(HDB_SESSION session, const HdbIpcResultSet& ipcResul
         HdbDllSetSessionError(session, "allocate result failed");
         return HDB_ERR_BUFFER;
     }
-    result->session = session;
-    result->columns = ipcResult.columns;
-    result->currentRow = -1;
-    for (rowIndex = 0; rowIndex < (int)ipcResult.rows.size(); ++rowIndex)
+    try
     {
-        std::vector<HdbResultCell> row;
-        int fieldIndex;
-
-        for (fieldIndex = 0; fieldIndex < (int)ipcResult.rows[rowIndex].size(); ++fieldIndex)
+        result->session = session;
+        result->columns = ipcResult.columns;
+        result->currentRow = -1;
+        for (rowIndex = 0; rowIndex < (int)ipcResult.rows.size(); ++rowIndex)
         {
-            HdbResultCell cell;
+            std::vector<HdbResultCell> row;
+            int fieldIndex;
 
-            cell.value = ipcResult.rows[rowIndex][fieldIndex].value;
-            cell.isNull = ipcResult.rows[rowIndex][fieldIndex].isNull;
-            row.push_back(cell);
+            for (fieldIndex = 0; fieldIndex < (int)ipcResult.rows[rowIndex].size(); ++fieldIndex)
+            {
+                HdbResultCell cell;
+
+                cell.value = ipcResult.rows[rowIndex][fieldIndex].value;
+                cell.isNull = ipcResult.rows[rowIndex][fieldIndex].isNull;
+                row.push_back(cell);
+            }
+            result->rows.push_back(row);
         }
-        result->rows.push_back(row);
+    }
+    catch (...)
+    {
+        delete result;
+        throw;
     }
     *outResult = result;
     return HDB_OK;
 }
 
-int HDB_CALL HdbOpen(const char* profileName, HDB_SESSION* outSession)
+static int HdbOpenImpl(const char* profileName, HDB_SESSION* outSession)
 {
     HDB_SESSION session;
 
@@ -474,18 +515,26 @@ int HDB_CALL HdbOpen(const char* profileName, HDB_SESSION* outSession)
     {
         return HDB_ERR_BUFFER;
     }
-    if (profileName != NULL)
+    try
     {
-        session->profileName = profileName;
+        if (profileName != NULL)
+        {
+            session->profileName = profileName;
+        }
+        session->ipcHost = HdbDllReadIpcHost();
+        session->ipcPort = HdbDllReadIpcPort();
+        session->nextSequence = 1;
     }
-    session->ipcHost = HdbDllReadIpcHost();
-    session->ipcPort = HdbDllReadIpcPort();
-    session->nextSequence = 1;
+    catch (...)
+    {
+        delete session;
+        throw;
+    }
     *outSession = session;
     return HDB_OK;
 }
 
-int HDB_CALL HdbOpenByConnInfo(const char* connInfo, HDB_SESSION* outSession)
+static int HdbOpenByConnInfoImpl(const char* connInfo, HDB_SESSION* outSession)
 {
     if (outSession == NULL)
     {
@@ -496,7 +545,7 @@ int HDB_CALL HdbOpenByConnInfo(const char* connInfo, HDB_SESSION* outSession)
     return HDB_ERR_NOT_IMPLEMENTED;
 }
 
-int HDB_CALL HdbClose(HDB_SESSION session)
+static int HdbCloseImpl(HDB_SESSION session)
 {
     if (session != NULL)
     {
@@ -505,7 +554,7 @@ int HDB_CALL HdbClose(HDB_SESSION session)
     return HDB_OK;
 }
 
-int HDB_CALL HdbPing(HDB_SESSION session)
+static int HdbPingImpl(HDB_SESSION session)
 {
     HdbIpcFrame responseFrame;
     std::vector<unsigned char> body;
@@ -518,7 +567,7 @@ int HDB_CALL HdbPing(HDB_SESSION session)
     return HdbDllRequest(session, HDB_IPC_CMD_DB_PING, body, responseFrame, responseBytes);
 }
 
-int HDB_CALL HdbGetLastError(HDB_SESSION session, char* buffer, int bufferSize, int* requiredSize)
+static int HdbGetLastErrorImpl(HDB_SESSION session, char* buffer, int bufferSize, int* requiredSize)
 {
     if (session == NULL)
     {
@@ -527,7 +576,7 @@ int HDB_CALL HdbGetLastError(HDB_SESSION session, char* buffer, int bufferSize, 
     return HdbDllCopyText(session->lastError, buffer, bufferSize, requiredSize);
 }
 
-int HDB_CALL HdbInsertRow(HDB_SESSION session, const char* datasetName, const void* row, int rowSize)
+static int HdbInsertRowImpl(HDB_SESSION session, const char* datasetName, const void* row, int rowSize)
 {
     (void)datasetName;
     (void)row;
@@ -540,7 +589,7 @@ int HDB_CALL HdbInsertRow(HDB_SESSION session, const char* datasetName, const vo
     return HDB_ERR_NOT_IMPLEMENTED;
 }
 
-int HDB_CALL HdbBatchInsertRows(HDB_SESSION session,
+static int HdbBatchInsertRowsImpl(HDB_SESSION session,
     const char* datasetName,
     const void* rows,
     int rowSize,
@@ -558,7 +607,7 @@ int HDB_CALL HdbBatchInsertRows(HDB_SESSION session,
     return HDB_ERR_NOT_IMPLEMENTED;
 }
 
-int HDB_CALL HdbQueryCreate(HDB_SESSION session, const char* datasetName, HDB_QUERY* outQuery)
+static int HdbQueryCreateImpl(HDB_SESSION session, const char* datasetName, HDB_QUERY* outQuery)
 {
     HDB_QUERY query;
 
@@ -573,18 +622,26 @@ int HDB_CALL HdbQueryCreate(HDB_SESSION session, const char* datasetName, HDB_QU
         HdbDllSetSessionError(session, "allocate query failed");
         return HDB_ERR_BUFFER;
     }
-    query->session = session;
-    if (query->ast.SetRootDataset(datasetName) != 0)
+    try
+    {
+        query->session = session;
+        if (query->ast.SetRootDataset(datasetName) != 0)
+        {
+            HdbDllSetSessionError(session, "invalid dataset name");
+            delete query;
+            return HDB_ERR_PARAM;
+        }
+    }
+    catch (...)
     {
         delete query;
-        HdbDllSetSessionError(session, "invalid dataset name");
-        return HDB_ERR_PARAM;
+        throw;
     }
     *outQuery = query;
     return HDB_OK;
 }
 
-int HDB_CALL HdbQueryFree(HDB_QUERY query)
+static int HdbQueryFreeImpl(HDB_QUERY query)
 {
     if (query != NULL)
     {
@@ -593,7 +650,7 @@ int HDB_CALL HdbQueryFree(HDB_QUERY query)
     return HDB_OK;
 }
 
-int HDB_CALL HdbQueryTimeRange(HDB_QUERY query, HdbInt64 beginMs, HdbInt64 endMs)
+static int HdbQueryTimeRangeImpl(HDB_QUERY query, HdbInt64 beginMs, HdbInt64 endMs)
 {
     if (query == NULL)
     {
@@ -607,7 +664,7 @@ int HDB_CALL HdbQueryTimeRange(HDB_QUERY query, HdbInt64 beginMs, HdbInt64 endMs
     return HDB_OK;
 }
 
-int HDB_CALL HdbQuerySelectPath(HDB_QUERY query, const char* fieldPath, const char* outputName)
+static int HdbQuerySelectPathImpl(HDB_QUERY query, const char* fieldPath, const char* outputName)
 {
     if (query == NULL)
     {
@@ -621,7 +678,7 @@ int HDB_CALL HdbQuerySelectPath(HDB_QUERY query, const char* fieldPath, const ch
     return HDB_OK;
 }
 
-int HDB_CALL HdbQueryWhereInt32(HDB_QUERY query, const char* fieldPath, int op, int value)
+static int HdbQueryWhereInt32Impl(HDB_QUERY query, const char* fieldPath, int op, int value)
 {
     if (query == NULL)
     {
@@ -635,7 +692,7 @@ int HDB_CALL HdbQueryWhereInt32(HDB_QUERY query, const char* fieldPath, int op, 
     return HDB_OK;
 }
 
-int HDB_CALL HdbQueryWhereInt64(HDB_QUERY query, const char* fieldPath, int op, HdbInt64 value)
+static int HdbQueryWhereInt64Impl(HDB_QUERY query, const char* fieldPath, int op, HdbInt64 value)
 {
     if (query == NULL)
     {
@@ -649,7 +706,7 @@ int HDB_CALL HdbQueryWhereInt64(HDB_QUERY query, const char* fieldPath, int op, 
     return HDB_OK;
 }
 
-int HDB_CALL HdbQueryWhereDouble(HDB_QUERY query, const char* fieldPath, int op, double value)
+static int HdbQueryWhereDoubleImpl(HDB_QUERY query, const char* fieldPath, int op, double value)
 {
     if (query == NULL)
     {
@@ -663,7 +720,7 @@ int HDB_CALL HdbQueryWhereDouble(HDB_QUERY query, const char* fieldPath, int op,
     return HDB_OK;
 }
 
-int HDB_CALL HdbQueryWhereStringEq(HDB_QUERY query, const char* fieldPath, const char* value)
+static int HdbQueryWhereStringEqImpl(HDB_QUERY query, const char* fieldPath, const char* value)
 {
     if (query == NULL)
     {
@@ -677,7 +734,7 @@ int HDB_CALL HdbQueryWhereStringEq(HDB_QUERY query, const char* fieldPath, const
     return HDB_OK;
 }
 
-int HDB_CALL HdbQueryWhereStringLike(HDB_QUERY query, const char* fieldPath, const char* pattern)
+static int HdbQueryWhereStringLikeImpl(HDB_QUERY query, const char* fieldPath, const char* pattern)
 {
     if (query == NULL)
     {
@@ -691,7 +748,7 @@ int HDB_CALL HdbQueryWhereStringLike(HDB_QUERY query, const char* fieldPath, con
     return HDB_OK;
 }
 
-int HDB_CALL HdbQueryOrderBy(HDB_QUERY query, const char* fieldPath, int orderType)
+static int HdbQueryOrderByImpl(HDB_QUERY query, const char* fieldPath, int orderType)
 {
     if (query == NULL)
     {
@@ -710,7 +767,7 @@ int HDB_CALL HdbQueryOrderBy(HDB_QUERY query, const char* fieldPath, int orderTy
     return HDB_OK;
 }
 
-int HDB_CALL HdbQueryLimit(HDB_QUERY query, int limit, int offset)
+static int HdbQueryLimitImpl(HDB_QUERY query, int limit, int offset)
 {
     if (query == NULL)
     {
@@ -724,7 +781,7 @@ int HDB_CALL HdbQueryLimit(HDB_QUERY query, int limit, int offset)
     return HDB_OK;
 }
 
-int HDB_CALL HdbQueryExecute(HDB_QUERY query, HDB_RESULT* outResult)
+static int HdbQueryExecuteImpl(HDB_QUERY query, HDB_RESULT* outResult)
 {
     HdbIpcFrame responseFrame;
     CHdbIpcFieldReader reader;
@@ -820,7 +877,7 @@ int HDB_CALL HdbQueryExecute(HDB_QUERY query, HDB_RESULT* outResult)
     return HdbDllFillResult(query->session, ipcResult, outResult);
 }
 
-int HDB_CALL HdbResultFree(HDB_RESULT result)
+static int HdbResultFreeImpl(HDB_RESULT result)
 {
     if (result != NULL)
     {
@@ -829,7 +886,7 @@ int HDB_CALL HdbResultFree(HDB_RESULT result)
     return HDB_OK;
 }
 
-int HDB_CALL HdbResultNext(HDB_RESULT result, int* hasRow)
+static int HdbResultNextImpl(HDB_RESULT result, int* hasRow)
 {
     if (result == NULL || hasRow == NULL)
     {
@@ -844,7 +901,7 @@ int HDB_CALL HdbResultNext(HDB_RESULT result, int* hasRow)
     return HDB_OK;
 }
 
-int HDB_CALL HdbResultIsNull(HDB_RESULT result, const char* outputName, int* isNull)
+static int HdbResultIsNullImpl(HDB_RESULT result, const char* outputName, int* isNull)
 {
     const HdbResultCell* cell;
     int fieldType;
@@ -863,7 +920,7 @@ int HDB_CALL HdbResultIsNull(HDB_RESULT result, const char* outputName, int* isN
     return HDB_OK;
 }
 
-int HDB_CALL HdbResultGetInt32(HDB_RESULT result, const char* outputName, int* value)
+static int HdbResultGetInt32Impl(HDB_RESULT result, const char* outputName, int* value)
 {
     const HdbResultCell* cell;
     int fieldType;
@@ -896,7 +953,7 @@ int HDB_CALL HdbResultGetInt32(HDB_RESULT result, const char* outputName, int* v
     return ret;
 }
 
-int HDB_CALL HdbResultGetInt64(HDB_RESULT result, const char* outputName, HdbInt64* value)
+static int HdbResultGetInt64Impl(HDB_RESULT result, const char* outputName, HdbInt64* value)
 {
     const HdbResultCell* cell;
     int fieldType;
@@ -929,7 +986,7 @@ int HDB_CALL HdbResultGetInt64(HDB_RESULT result, const char* outputName, HdbInt
     return ret;
 }
 
-int HDB_CALL HdbResultGetDouble(HDB_RESULT result, const char* outputName, double* value)
+static int HdbResultGetDoubleImpl(HDB_RESULT result, const char* outputName, double* value)
 {
     const HdbResultCell* cell;
     int fieldType;
@@ -962,7 +1019,7 @@ int HDB_CALL HdbResultGetDouble(HDB_RESULT result, const char* outputName, doubl
     return ret;
 }
 
-int HDB_CALL HdbResultGetString(HDB_RESULT result,
+static int HdbResultGetStringImpl(HDB_RESULT result,
     const char* outputName,
     char* buffer,
     int bufferSize,
@@ -992,4 +1049,612 @@ int HDB_CALL HdbResultGetString(HDB_RESULT result,
         return HDB_ERR_TYPE_MISMATCH;
     }
     return HdbDllCopyText(cell->value, buffer, bufferSize, requiredSize);
+}
+
+static int HdbDllReturnSessionBadAlloc(HDB_SESSION session)
+{
+    HdbDllTrySetSessionError(session, "memory allocation failed");
+    return HDB_ERR_BUFFER;
+}
+
+static int HdbDllReturnSessionException(HDB_SESSION session)
+{
+    HdbDllTrySetSessionError(session, "unexpected dll exception");
+    return HDB_ERR_INTERNAL;
+}
+
+static int HdbDllReturnQueryBadAlloc(HDB_QUERY query)
+{
+    HdbDllTrySetQueryError(query, "memory allocation failed");
+    return HDB_ERR_BUFFER;
+}
+
+static int HdbDllReturnQueryException(HDB_QUERY query)
+{
+    HdbDllTrySetQueryError(query, "unexpected dll exception");
+    return HDB_ERR_INTERNAL;
+}
+
+static int HdbDllReturnResultBadAlloc(HDB_RESULT result)
+{
+    HdbDllTrySetResultError(result, "memory allocation failed");
+    return HDB_ERR_BUFFER;
+}
+
+static int HdbDllReturnResultException(HDB_RESULT result)
+{
+    HdbDllTrySetResultError(result, "unexpected dll exception");
+    return HDB_ERR_INTERNAL;
+}
+
+int HDB_CALL HdbOpen(const char* profileName, HDB_SESSION* outSession)
+{
+    if (outSession != NULL)
+    {
+        *outSession = NULL;
+    }
+    try
+    {
+        return HdbOpenImpl(profileName, outSession);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (outSession != NULL)
+        {
+            *outSession = NULL;
+        }
+        return HDB_ERR_BUFFER;
+    }
+    catch (...)
+    {
+        if (outSession != NULL)
+        {
+            *outSession = NULL;
+        }
+        return HDB_ERR_INTERNAL;
+    }
+}
+
+int HDB_CALL HdbOpenByConnInfo(const char* connInfo, HDB_SESSION* outSession)
+{
+    if (outSession != NULL)
+    {
+        *outSession = NULL;
+    }
+    try
+    {
+        return HdbOpenByConnInfoImpl(connInfo, outSession);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (outSession != NULL)
+        {
+            *outSession = NULL;
+        }
+        return HDB_ERR_BUFFER;
+    }
+    catch (...)
+    {
+        if (outSession != NULL)
+        {
+            *outSession = NULL;
+        }
+        return HDB_ERR_INTERNAL;
+    }
+}
+
+int HDB_CALL HdbClose(HDB_SESSION session)
+{
+    try
+    {
+        return HdbCloseImpl(session);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HDB_ERR_BUFFER;
+    }
+    catch (...)
+    {
+        return HDB_ERR_INTERNAL;
+    }
+}
+
+int HDB_CALL HdbPing(HDB_SESSION session)
+{
+    try
+    {
+        return HdbPingImpl(session);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HdbDllReturnSessionBadAlloc(session);
+    }
+    catch (...)
+    {
+        return HdbDllReturnSessionException(session);
+    }
+}
+
+int HDB_CALL HdbGetLastError(HDB_SESSION session, char* buffer, int bufferSize, int* requiredSize)
+{
+    try
+    {
+        return HdbGetLastErrorImpl(session, buffer, bufferSize, requiredSize);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (buffer != NULL && bufferSize > 0)
+        {
+            buffer[0] = '\0';
+        }
+        if (requiredSize != NULL)
+        {
+            *requiredSize = 0;
+        }
+        return HDB_ERR_BUFFER;
+    }
+    catch (...)
+    {
+        if (buffer != NULL && bufferSize > 0)
+        {
+            buffer[0] = '\0';
+        }
+        if (requiredSize != NULL)
+        {
+            *requiredSize = 0;
+        }
+        return HDB_ERR_INTERNAL;
+    }
+}
+
+int HDB_CALL HdbInsertRow(HDB_SESSION session, const char* datasetName, const void* row, int rowSize)
+{
+    try
+    {
+        return HdbInsertRowImpl(session, datasetName, row, rowSize);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HdbDllReturnSessionBadAlloc(session);
+    }
+    catch (...)
+    {
+        return HdbDllReturnSessionException(session);
+    }
+}
+
+int HDB_CALL HdbBatchInsertRows(HDB_SESSION session,
+    const char* datasetName,
+    const void* rows,
+    int rowSize,
+    int rowCount)
+{
+    try
+    {
+        return HdbBatchInsertRowsImpl(session, datasetName, rows, rowSize, rowCount);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HdbDllReturnSessionBadAlloc(session);
+    }
+    catch (...)
+    {
+        return HdbDllReturnSessionException(session);
+    }
+}
+
+int HDB_CALL HdbQueryCreate(HDB_SESSION session, const char* datasetName, HDB_QUERY* outQuery)
+{
+    if (outQuery != NULL)
+    {
+        *outQuery = NULL;
+    }
+    try
+    {
+        return HdbQueryCreateImpl(session, datasetName, outQuery);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (outQuery != NULL)
+        {
+            *outQuery = NULL;
+        }
+        return HdbDllReturnSessionBadAlloc(session);
+    }
+    catch (...)
+    {
+        if (outQuery != NULL)
+        {
+            *outQuery = NULL;
+        }
+        return HdbDllReturnSessionException(session);
+    }
+}
+
+int HDB_CALL HdbQueryFree(HDB_QUERY query)
+{
+    try
+    {
+        return HdbQueryFreeImpl(query);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HDB_ERR_BUFFER;
+    }
+    catch (...)
+    {
+        return HDB_ERR_INTERNAL;
+    }
+}
+
+int HDB_CALL HdbQueryTimeRange(HDB_QUERY query, HdbInt64 beginMs, HdbInt64 endMs)
+{
+    try
+    {
+        return HdbQueryTimeRangeImpl(query, beginMs, endMs);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbQuerySelectPath(HDB_QUERY query, const char* fieldPath, const char* outputName)
+{
+    try
+    {
+        return HdbQuerySelectPathImpl(query, fieldPath, outputName);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbQueryWhereInt32(HDB_QUERY query, const char* fieldPath, int op, int value)
+{
+    try
+    {
+        return HdbQueryWhereInt32Impl(query, fieldPath, op, value);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbQueryWhereInt64(HDB_QUERY query, const char* fieldPath, int op, HdbInt64 value)
+{
+    try
+    {
+        return HdbQueryWhereInt64Impl(query, fieldPath, op, value);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbQueryWhereDouble(HDB_QUERY query, const char* fieldPath, int op, double value)
+{
+    try
+    {
+        return HdbQueryWhereDoubleImpl(query, fieldPath, op, value);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbQueryWhereStringEq(HDB_QUERY query, const char* fieldPath, const char* value)
+{
+    try
+    {
+        return HdbQueryWhereStringEqImpl(query, fieldPath, value);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbQueryWhereStringLike(HDB_QUERY query, const char* fieldPath, const char* pattern)
+{
+    try
+    {
+        return HdbQueryWhereStringLikeImpl(query, fieldPath, pattern);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbQueryOrderBy(HDB_QUERY query, const char* fieldPath, int orderType)
+{
+    try
+    {
+        return HdbQueryOrderByImpl(query, fieldPath, orderType);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbQueryLimit(HDB_QUERY query, int limit, int offset)
+{
+    try
+    {
+        return HdbQueryLimitImpl(query, limit, offset);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbQueryExecute(HDB_QUERY query, HDB_RESULT* outResult)
+{
+    if (outResult != NULL)
+    {
+        *outResult = NULL;
+    }
+    try
+    {
+        return HdbQueryExecuteImpl(query, outResult);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (outResult != NULL)
+        {
+            *outResult = NULL;
+        }
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        if (outResult != NULL)
+        {
+            *outResult = NULL;
+        }
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbResultFree(HDB_RESULT result)
+{
+    try
+    {
+        return HdbResultFreeImpl(result);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HDB_ERR_BUFFER;
+    }
+    catch (...)
+    {
+        return HDB_ERR_INTERNAL;
+    }
+}
+
+int HDB_CALL HdbResultNext(HDB_RESULT result, int* hasRow)
+{
+    if (hasRow != NULL)
+    {
+        *hasRow = 0;
+    }
+    try
+    {
+        return HdbResultNextImpl(result, hasRow);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (hasRow != NULL)
+        {
+            *hasRow = 0;
+        }
+        return HdbDllReturnResultBadAlloc(result);
+    }
+    catch (...)
+    {
+        if (hasRow != NULL)
+        {
+            *hasRow = 0;
+        }
+        return HdbDllReturnResultException(result);
+    }
+}
+
+int HDB_CALL HdbResultIsNull(HDB_RESULT result, const char* outputName, int* isNull)
+{
+    if (isNull != NULL)
+    {
+        *isNull = 0;
+    }
+    try
+    {
+        return HdbResultIsNullImpl(result, outputName, isNull);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (isNull != NULL)
+        {
+            *isNull = 0;
+        }
+        return HdbDllReturnResultBadAlloc(result);
+    }
+    catch (...)
+    {
+        if (isNull != NULL)
+        {
+            *isNull = 0;
+        }
+        return HdbDllReturnResultException(result);
+    }
+}
+
+int HDB_CALL HdbResultGetInt32(HDB_RESULT result, const char* outputName, int* value)
+{
+    if (value != NULL)
+    {
+        *value = 0;
+    }
+    try
+    {
+        return HdbResultGetInt32Impl(result, outputName, value);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (value != NULL)
+        {
+            *value = 0;
+        }
+        return HdbDllReturnResultBadAlloc(result);
+    }
+    catch (...)
+    {
+        if (value != NULL)
+        {
+            *value = 0;
+        }
+        return HdbDllReturnResultException(result);
+    }
+}
+
+int HDB_CALL HdbResultGetInt64(HDB_RESULT result, const char* outputName, HdbInt64* value)
+{
+    if (value != NULL)
+    {
+        *value = 0;
+    }
+    try
+    {
+        return HdbResultGetInt64Impl(result, outputName, value);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (value != NULL)
+        {
+            *value = 0;
+        }
+        return HdbDllReturnResultBadAlloc(result);
+    }
+    catch (...)
+    {
+        if (value != NULL)
+        {
+            *value = 0;
+        }
+        return HdbDllReturnResultException(result);
+    }
+}
+
+int HDB_CALL HdbResultGetDouble(HDB_RESULT result, const char* outputName, double* value)
+{
+    if (value != NULL)
+    {
+        *value = 0.0;
+    }
+    try
+    {
+        return HdbResultGetDoubleImpl(result, outputName, value);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (value != NULL)
+        {
+            *value = 0.0;
+        }
+        return HdbDllReturnResultBadAlloc(result);
+    }
+    catch (...)
+    {
+        if (value != NULL)
+        {
+            *value = 0.0;
+        }
+        return HdbDllReturnResultException(result);
+    }
+}
+
+int HDB_CALL HdbResultGetString(HDB_RESULT result,
+    const char* outputName,
+    char* buffer,
+    int bufferSize,
+    int* requiredSize)
+{
+    if (buffer != NULL && bufferSize > 0)
+    {
+        buffer[0] = '\0';
+    }
+    if (requiredSize != NULL)
+    {
+        *requiredSize = 0;
+    }
+    try
+    {
+        return HdbResultGetStringImpl(result, outputName, buffer, bufferSize, requiredSize);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (buffer != NULL && bufferSize > 0)
+        {
+            buffer[0] = '\0';
+        }
+        if (requiredSize != NULL)
+        {
+            *requiredSize = 0;
+        }
+        return HdbDllReturnResultBadAlloc(result);
+    }
+    catch (...)
+    {
+        if (buffer != NULL && bufferSize > 0)
+        {
+            buffer[0] = '\0';
+        }
+        if (requiredSize != NULL)
+        {
+            *requiredSize = 0;
+        }
+        return HdbDllReturnResultException(result);
+    }
 }

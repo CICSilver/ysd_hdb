@@ -28,7 +28,8 @@ enum HdbErrorCode
     HDB_ERR_SHARD_NOT_FOUND = -16, // 必须访问的物理分片表不存在
     HDB_ERR_NOT_IMPLEMENTED = -17, // 接口已预留但当前阶段尚未实现
     HDB_ERR_NULL_VALUE = -18, // 当前值为 NULL，不能按普通值读取
-    HDB_ERR_TYPE_MISMATCH = -19 // 字段类型或文本转换结果与读取接口不匹配
+    HDB_ERR_TYPE_MISMATCH = -19, // 字段类型或文本转换结果与读取接口不匹配
+    HDB_ERR_INTERNAL = -20 // 模块内部发生未预期异常
 };
 
 enum HdbCompareOp
