@@ -67,6 +67,9 @@ private:
     int AppendFieldExpr(const HdbResolvedFieldPath& path,
         const std::vector<JoinInfo>& joins,
         std::string& outExpr);
+    int FormatWhereParamValue(const HdbResolvedFieldPath& path,
+        const HdbQueryWhereItem& whereItem,
+        std::string& outValue);
     int AddParam(HdbBuiltQuery& query, const std::string& value);
     std::string Placeholder(int index) const;
     std::string FormatTimestampMs(HdbInt64 value) const;

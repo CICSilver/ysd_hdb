@@ -1,6 +1,9 @@
 ﻿#include "HdbQuerySqlBuilder.h"
 
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -20,6 +23,66 @@ static std::string IntToString(int value)
     std::ostringstream out;
     out << value;
     return out.str();
+}
+
+static int HdbBuilderParseInt32Strict(const std::string& text, int* value)
+{
+    char* endPtr;
+    long parsed;
+
+    if (value == NULL || text.empty())
+    {
+        return HDB_ERR_PARAM;
+    }
+    errno = 0;
+    endPtr = NULL;
+    parsed = strtol(text.c_str(), &endPtr, 10);
+    if (errno != 0 || endPtr == NULL || *endPtr != '\0' || parsed < INT_MIN || parsed > INT_MAX)
+    {
+        return HDB_ERR_QUERY_RANGE;
+    }
+    *value = (int)parsed;
+    return HDB_OK;
+}
+
+static int HdbBuilderParseInt64Strict(const std::string& text, HdbInt64* value)
+{
+    char* endPtr;
+
+    if (value == NULL || text.empty())
+    {
+        return HDB_ERR_PARAM;
+    }
+    errno = 0;
+    endPtr = NULL;
+#ifdef _WIN32
+    *value = (HdbInt64)_strtoi64(text.c_str(), &endPtr, 10);
+#else
+    *value = (HdbInt64)strtoll(text.c_str(), &endPtr, 10);
+#endif
+    if (errno != 0 || endPtr == NULL || *endPtr != '\0')
+    {
+        return HDB_ERR_QUERY_RANGE;
+    }
+    return HDB_OK;
+}
+
+static int HdbBuilderParseDoubleStrict(const std::string& text)
+{
+    char* endPtr;
+
+    if (text.empty())
+    {
+        return HDB_ERR_PARAM;
+    }
+    errno = 0;
+    endPtr = NULL;
+    strtod(text.c_str(), &endPtr);
+    if (errno != 0 || endPtr == NULL || *endPtr != '\0')
+    {
+        return HDB_ERR_QUERY_RANGE;
+    }
+    return HDB_OK;
 }
 
 void HdbBuiltQuery::Clear()
@@ -396,7 +459,9 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
     for (i = 0; i < wherePaths.size(); ++i)
     {
         const char* opText;
+        std::string paramValue;
         int paramIndex;
+        int formatRet;
 
         if (!wherePaths[i].relations.empty())
         {
@@ -408,7 +473,12 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
             SetLastError("unsupported root compare op");
             return HDB_ERR_QUERY_RANGE;
         }
-        paramIndex = AddParam(outQuery, ast.wheres[i].valueText);
+        formatRet = FormatWhereParamValue(wherePaths[i], ast.wheres[i], paramValue);
+        if (formatRet != HDB_OK)
+        {
+            return formatRet;
+        }
+        paramIndex = AddParam(outQuery, paramValue);
         if (!pushdownWhere.empty())
         {
             pushdownWhere += " and ";
@@ -513,8 +583,10 @@ int CHdbQuerySqlBuilder::BuildWhere(const CHdbQueryAst& ast,
     for (i = 0; i < wherePaths.size(); ++i)
     {
         std::string expr;
+        std::string paramValue;
         const char* opText;
         int paramIndex;
+        int formatRet;
 
         if (rootDataset.shard.shardType == HDB_SHARD_DAY && wherePaths[i].relations.empty())
         {
@@ -530,7 +602,12 @@ int CHdbQuerySqlBuilder::BuildWhere(const CHdbQueryAst& ast,
         {
             return HDB_ERR_FIELD_PATH;
         }
-        paramIndex = AddParam(outQuery, ast.wheres[i].valueText);
+        formatRet = FormatWhereParamValue(wherePaths[i], ast.wheres[i], paramValue);
+        if (formatRet != HDB_OK)
+        {
+            return formatRet;
+        }
+        paramIndex = AddParam(outQuery, paramValue);
         if (!first)
         {
             sql << " and ";
@@ -597,6 +674,112 @@ int CHdbQuerySqlBuilder::AppendFieldExpr(const HdbResolvedFieldPath& path,
     outExpr += ".";
     outExpr += path.field->columnName;
     return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::FormatWhereParamValue(const HdbResolvedFieldPath& path,
+    const HdbQueryWhereItem& whereItem,
+    std::string& outValue)
+{
+    int intValue;
+    HdbInt64 int64Value;
+
+    outValue.clear();
+    if (path.field == NULL)
+    {
+        SetLastError("where field is NULL");
+        return HDB_ERR_FIELD_PATH;
+    }
+    if (whereItem.op == HDB_OP_LIKE && path.field->type != HDB_FT_CHAR_ARRAY)
+    {
+        SetLastError("like operator requires string field");
+        return HDB_ERR_TYPE_MISMATCH;
+    }
+    switch (path.field->type)
+    {
+    case HDB_FT_INT32:
+        if (whereItem.valueType != HDB_QVT_INT32)
+        {
+            SetLastError("int32 field requires int32 value");
+            return HDB_ERR_TYPE_MISMATCH;
+        }
+        if (HdbBuilderParseInt32Strict(whereItem.valueText, &intValue) != HDB_OK)
+        {
+            SetLastError("int32 where value is invalid");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        outValue = whereItem.valueText;
+        return HDB_OK;
+    case HDB_FT_SMALLINT:
+        if (whereItem.valueType != HDB_QVT_INT32)
+        {
+            SetLastError("smallint field requires int32 value");
+            return HDB_ERR_TYPE_MISMATCH;
+        }
+        if (HdbBuilderParseInt32Strict(whereItem.valueText, &intValue) != HDB_OK ||
+            intValue < -32768 ||
+            intValue > 32767)
+        {
+            SetLastError("smallint where value is out of range");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        outValue = whereItem.valueText;
+        return HDB_OK;
+    case HDB_FT_INT64:
+        if (whereItem.valueType != HDB_QVT_INT64)
+        {
+            SetLastError("int64 field requires int64 value");
+            return HDB_ERR_TYPE_MISMATCH;
+        }
+        if (HdbBuilderParseInt64Strict(whereItem.valueText, &int64Value) != HDB_OK)
+        {
+            SetLastError("int64 where value is invalid");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        outValue = whereItem.valueText;
+        return HDB_OK;
+    case HDB_FT_DOUBLE:
+        if (whereItem.valueType != HDB_QVT_DOUBLE)
+        {
+            SetLastError("double field requires double value");
+            return HDB_ERR_TYPE_MISMATCH;
+        }
+        if (HdbBuilderParseDoubleStrict(whereItem.valueText) != HDB_OK)
+        {
+            SetLastError("double where value is invalid");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        outValue = whereItem.valueText;
+        return HDB_OK;
+    case HDB_FT_CHAR_ARRAY:
+        if (whereItem.valueType != HDB_QVT_STRING)
+        {
+            SetLastError("string field requires string value");
+            return HDB_ERR_TYPE_MISMATCH;
+        }
+        outValue = whereItem.valueText;
+        return HDB_OK;
+    case HDB_FT_TIMESTAMP_MS:
+        if (whereItem.valueType != HDB_QVT_INT64)
+        {
+            SetLastError("timestamp_ms field requires int64 epoch ms value");
+            return HDB_ERR_TYPE_MISMATCH;
+        }
+        if (HdbBuilderParseInt64Strict(whereItem.valueText, &int64Value) != HDB_OK)
+        {
+            SetLastError("timestamp_ms where value is invalid");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        outValue = FormatTimestampMs(int64Value);
+        if (outValue.empty())
+        {
+            SetLastError("timestamp_ms where value conversion failed");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        return HDB_OK;
+    default:
+        SetLastError("unsupported where field type");
+        return HDB_ERR_FIELD_PATH;
+    }
 }
 
 int CHdbQuerySqlBuilder::AddParam(HdbBuiltQuery& query, const std::string& value)
