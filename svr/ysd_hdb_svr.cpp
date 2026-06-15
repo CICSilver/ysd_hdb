@@ -1,556 +1,66 @@
-#include "HdbModelCrud.h"
-#include "HdbPgAdapter.h"
+﻿#include "HdbPgAdapter.h"
 #include "HdbDatasetRegistry.h"
-#include "HdbFieldPathResolver.h"
 #include "HdbQueryExecutor.h"
-#include "HdbQuerySqlBuilder.h"
-#include "HdbShardRouter.h"
 #include "../common/HdbIpcProtocol.h"
+#include "../common/HdbIpcResultCodec.h"
+#include "../common/HdbIpcSocket.h"
+#include "../test/HdbSvrSelfTest.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <string>
 #include <vector>
 
-struct HdbTestModel
-{
-    HdbInt64 id;
-    int type;
-    char name[128];
-    HdbInt64 create_time;
-};
-
-static HdbFieldDef g_hdbTestFields[] =
-{
-    HDB_FIELD_INT64_PK(HdbTestModel, id, "id"),
-    HDB_FIELD_INT32(HdbTestModel, type, "type"),
-    HDB_FIELD_CHAR(HdbTestModel, name, "name", 128),
-    HDB_FIELD_TIMESTAMP_MS(HdbTestModel, create_time, "create_time")
-};
-
-static HdbModelDef g_hdbTestModelDef =
-{
-    "hdb_model_crud_test",
-    sizeof(HdbTestModel),
-    g_hdbTestFields,
-    (int)HDB_ARRAY_COUNT(g_hdbTestFields)
-};
-
-static void SetText(char* buffer, int bufferSize, const char* text)
-{
-    if (buffer == NULL || bufferSize <= 0)
-    {
-        return;
-    }
-    memset(buffer, 0, bufferSize);
-    if (text != NULL)
-    {
-        strncpy(buffer, text, bufferSize - 1);
-        buffer[bufferSize - 1] = '\0';
-    }
-}
-
-static HdbInt64 MakeLocalTimeMs(int year, int month, int day, int hour, int minute, int second, int millis)
-{
-    struct tm tmValue;
-    time_t seconds;
-
-    memset(&tmValue, 0, sizeof(tmValue));
-    tmValue.tm_year = year - 1900;
-    tmValue.tm_mon = month - 1;
-    tmValue.tm_mday = day;
-    tmValue.tm_hour = hour;
-    tmValue.tm_min = minute;
-    tmValue.tm_sec = second;
-    tmValue.tm_isdst = -1;
-    seconds = mktime(&tmValue);
-    return ((HdbInt64)seconds) * 1000 + millis;
-}
-
-static const char* ReadConnInfo(int argc, char* argv[])
+static const char* ReadDefaultConnInfo()
 {
     const char* envConn;
-    if (argc > 1 && argv[1] != NULL && argv[1][0] != '\0')
-    {
-        return argv[1];
-    }
 
     envConn = getenv("HDB_PG_CONNINFO");
     if (envConn != NULL && envConn[0] != '\0')
     {
         return envConn;
     }
-
     return "host=127.0.0.1 port=5432 dbname=postgres user=postgres password=postgres";
 }
 
-static int CreateTestTable(CHdbPgAdapter& adapter)
+static const char* ReadSelfTestConnInfo(int argc, char* argv[])
 {
-    int ret;
-    ret = adapter.ExecCommand("drop table if exists hdb_model_crud_test", NULL);
-    if (ret != HDB_OK)
+    if (argc > 2 && argv[2] != NULL && argv[2][0] != '\0')
     {
-        return ret;
+        return argv[2];
     }
-
-    return adapter.ExecCommand(
-        "create table hdb_model_crud_test ("
-        "id bigint not null primary key,"
-        "type integer not null,"
-        "name varchar(128) not null,"
-        "create_time timestamp not null"
-        ")",
-        NULL);
+    return ReadDefaultConnInfo();
 }
 
-static int RunCrudSelfTest(CHdbPgAdapter& adapter)
+static const char* ReadIpcHost()
 {
-    CHdbModelCrud crud(&adapter);
-    HdbTestModel model;
-    HdbTestModel key;
-    HdbTestModel out;
-    int found;
-    int ret;
+    const char* envHost;
 
-    memset(&model, 0, sizeof(model));
-    model.id = 1001;
-    model.type = 7;
-    SetText(model.name, sizeof(model.name), "O'Reilly alarm test");
-    model.create_time = 1717470000789LL;
-
-    ret = adapter.Begin();
-    if (ret != HDB_OK)
+    envHost = getenv("HDB_IPC_HOST");
+    if (envHost != NULL && envHost[0] != '\0')
     {
-        printf("begin failed: %s\n", adapter.GetLastError());
-        return ret;
+        return envHost;
     }
-
-    ret = crud.InsertModel(g_hdbTestModelDef, &model);
-    if (ret != HDB_OK)
-    {
-        printf("insert failed: %s\n", crud.GetLastError());
-        adapter.Rollback();
-        return ret;
-    }
-
-    ret = adapter.Commit();
-    if (ret != HDB_OK)
-    {
-        printf("commit failed: %s\n", adapter.GetLastError());
-        return ret;
-    }
-    printf("insert ok\n");
-
-    memset(&key, 0, sizeof(key));
-    key.id = model.id;
-    memset(&out, 0, sizeof(out));
-    found = 0;
-    ret = crud.SelectModelByPk(g_hdbTestModelDef, &key, &out, &found);
-    if (ret != HDB_OK || found == 0)
-    {
-        printf("select after insert failed: ret=%d found=%d error=%s\n", ret, found, crud.GetLastError());
-        return ret == HDB_OK ? HDB_ERR_NO_RECORD : ret;
-    }
-    printf("select ok: id=" HDB_INT64_FORMAT " type=%d name=%s create_time=" HDB_INT64_FORMAT "\n",
-        out.id, out.type, out.name, out.create_time);
-
-    model.type = 9;
-    SetText(model.name, sizeof(model.name), "updated name with quote ' ok");
-    ret = crud.UpdateModel(g_hdbTestModelDef, &model);
-    if (ret != HDB_OK)
-    {
-        printf("update failed: %s\n", crud.GetLastError());
-        return ret;
-    }
-    printf("update ok\n");
-
-    memset(&out, 0, sizeof(out));
-    found = 0;
-    ret = crud.SelectModelByPk(g_hdbTestModelDef, &key, &out, &found);
-    if (ret != HDB_OK || found == 0 || out.type != 9)
-    {
-        printf("select after update failed: ret=%d found=%d type=%d error=%s\n",
-            ret, found, out.type, crud.GetLastError());
-        return ret == HDB_OK ? HDB_ERR_DB_EXEC : ret;
-    }
-    printf("select updated ok: id=" HDB_INT64_FORMAT " type=%d name=%s\n", out.id, out.type, out.name);
-
-    ret = crud.DeleteModel(g_hdbTestModelDef, &key);
-    if (ret != HDB_OK)
-    {
-        printf("delete failed: %s\n", crud.GetLastError());
-        return ret;
-    }
-    printf("delete ok\n");
-
-    memset(&out, 0, sizeof(out));
-    found = 0;
-    ret = crud.SelectModelByPk(g_hdbTestModelDef, &key, &out, &found);
-    if (ret != HDB_OK)
-    {
-        printf("select after delete failed: %s\n", crud.GetLastError());
-        return ret;
-    }
-    if (found != 0)
-    {
-        printf("select after delete expected no record\n");
-        return HDB_ERR_DB_EXEC;
-    }
-    printf("select no record ok\n");
-
-    return HDB_OK;
+    return HDB_IPC_DEFAULT_HOST;
 }
 
-static int CreateHistoryQueryTables(CHdbPgAdapter& adapter)
+static int ReadIpcPort()
 {
-    int ret;
+    const char* envPort;
+    int port;
 
-    ret = adapter.ExecCommand("drop table if exists hdb_alarm_20260612", NULL);
-    if (ret != HDB_OK)
+    envPort = getenv("HDB_IPC_PORT");
+    if (envPort == NULL || envPort[0] == '\0')
     {
-        return ret;
+        return HDB_IPC_DEFAULT_PORT;
     }
-    ret = adapter.ExecCommand("drop table if exists hdb_alarm_20260613", NULL);
-    if (ret != HDB_OK)
+    port = atoi(envPort);
+    if (port <= 0 || port > 65535)
     {
-        return ret;
+        return HDB_IPC_DEFAULT_PORT;
     }
-    ret = adapter.ExecCommand("drop table if exists hdb_point", NULL);
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-    ret = adapter.ExecCommand("drop table if exists hdb_device", NULL);
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-
-    ret = adapter.ExecCommand(
-        "create table hdb_alarm_20260612 ("
-        "id bigint not null primary key,"
-        "point_id bigint,"
-        "level integer not null,"
-        "message varchar(128),"
-        "occur_time timestamp not null"
-        ")",
-        NULL);
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-    ret = adapter.ExecCommand(
-        "create table hdb_alarm_20260613 ("
-        "id bigint not null primary key,"
-        "point_id bigint,"
-        "level integer not null,"
-        "message varchar(128),"
-        "occur_time timestamp not null"
-        ")",
-        NULL);
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-    ret = adapter.ExecCommand(
-        "create table hdb_point ("
-        "id bigint not null primary key,"
-        "device_id bigint,"
-        "name varchar(128) not null"
-        ")",
-        NULL);
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-    ret = adapter.ExecCommand(
-        "create table hdb_device ("
-        "id bigint not null primary key,"
-        "name varchar(128) not null"
-        ")",
-        NULL);
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-
-    ret = adapter.ExecCommand("insert into hdb_device(id, name) values (200, 'device A')", NULL);
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-    ret = adapter.ExecCommand("insert into hdb_point(id, device_id, name) values (100, 200, 'point A')", NULL);
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-    ret = adapter.ExecCommand("insert into hdb_point(id, device_id, name) values (101, 999, 'point B')", NULL);
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-    ret = adapter.ExecCommand(
-        "insert into hdb_alarm_20260612(id, point_id, level, message, occur_time) "
-        "values (1, 100, 3, 'alarm day one', '2026-06-12 10:00:00.000')",
-        NULL);
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-    return adapter.ExecCommand(
-        "insert into hdb_alarm_20260613(id, point_id, level, message, occur_time) "
-        "values (2, 101, 4, 'alarm day two', '2026-06-13 11:00:00.000')",
-        NULL);
-}
-
-static int RunQueryResultSelfTest()
-{
-    CHdbQueryResult result;
-    std::vector<HdbQueryCell> row;
-    HdbQueryCell emptyText;
-    HdbQueryCell nullText;
-
-    result.AddColumn("emptyText");
-    result.AddColumn("nullText");
-    emptyText.value = "";
-    emptyText.isNull = 0;
-    nullText.value = "";
-    nullText.isNull = 1;
-    row.push_back(emptyText);
-    row.push_back(nullText);
-    result.AddRow(row);
-
-    if (result.IsNull(0, 0) != 0 || result.IsNull(0, 1) != 1)
-    {
-        printf("query result null self-test failed\n");
-        return HDB_ERR_DB_EXEC;
-    }
-    if (result.FindColumn("nullText") != 1)
-    {
-        printf("query result column lookup self-test failed\n");
-        return HDB_ERR_DB_EXEC;
-    }
-    printf("query result null self-test ok\n");
-    return HDB_OK;
-}
-
-static int RunShardRouterSelfTest()
-{
-    CHdbDatasetRegistry registry;
-    CHdbShardRouter router;
-    const HdbDatasetDef* alarmDataset;
-    const HdbDatasetDef* pointDataset;
-    std::string tableName;
-    std::vector<std::string> tables;
-    HdbInt64 beginMs;
-    HdbInt64 endMs;
-    int ret;
-
-    alarmDataset = registry.FindDataset("alarm");
-    pointDataset = registry.FindDataset("point");
-    if (alarmDataset == NULL || pointDataset == NULL)
-    {
-        printf("shard router dataset self-test failed\n");
-        return HDB_ERR_DATASET_NOT_FOUND;
-    }
-    beginMs = MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0);
-    endMs = MakeLocalTimeMs(2026, 6, 14, 0, 0, 0, 0);
-
-    ret = router.BuildDayTableName(*alarmDataset, beginMs, tableName);
-    if (ret != HDB_OK || tableName != "hdb_alarm_20260612")
-    {
-        printf("day table name self-test failed: %s\n", tableName.c_str());
-        return ret == HDB_OK ? HDB_ERR_SHARD_DEF : ret;
-    }
-    ret = router.ResolveQueryTables(*alarmDataset, beginMs, endMs, tables);
-    if (ret != HDB_OK || tables.size() != 2 ||
-        tables[0] != "hdb_alarm_20260612" ||
-        tables[1] != "hdb_alarm_20260613")
-    {
-        printf("day query tables self-test failed\n");
-        return ret == HDB_OK ? HDB_ERR_SHARD_DEF : ret;
-    }
-    ret = router.ResolveQueryTables(*pointDataset, beginMs, endMs, tables);
-    if (ret != HDB_OK || tables.size() != 1 || tables[0] != "hdb_point")
-    {
-        printf("none shard query tables self-test failed\n");
-        return ret == HDB_OK ? HDB_ERR_SHARD_DEF : ret;
-    }
-    ret = router.ResolveQueryTables(*alarmDataset, endMs, beginMs, tables);
-    if (ret != HDB_ERR_QUERY_RANGE)
-    {
-        printf("invalid shard range self-test failed: %d\n", ret);
-        return HDB_ERR_QUERY_RANGE;
-    }
-    printf("shard router self-test ok\n");
-    return HDB_OK;
-}
-
-static int RunFieldPathSelfTest()
-{
-    CHdbDatasetRegistry registry;
-    CHdbFieldPathResolver resolver(&registry);
-    const HdbDatasetDef* alarmDataset;
-    HdbResolvedFieldPath path;
-    int ret;
-
-    alarmDataset = registry.FindDataset("alarm");
-    if (alarmDataset == NULL)
-    {
-        return HDB_ERR_DATASET_NOT_FOUND;
-    }
-    ret = resolver.Resolve(*alarmDataset, "level", path);
-    if (ret != HDB_OK || path.relations.size() != 0 || strcmp(path.field->fieldName, "level") != 0)
-    {
-        printf("root field path self-test failed\n");
-        return ret == HDB_OK ? HDB_ERR_FIELD_PATH : ret;
-    }
-    ret = resolver.Resolve(*alarmDataset, "point.name", path);
-    if (ret != HDB_OK || path.relations.size() != 1 || strcmp(path.field->fieldName, "name") != 0)
-    {
-        printf("one relation field path self-test failed\n");
-        return ret == HDB_OK ? HDB_ERR_FIELD_PATH : ret;
-    }
-    ret = resolver.Resolve(*alarmDataset, "point.device.name", path);
-    if (ret != HDB_OK || path.relations.size() != 2 || strcmp(path.field->fieldName, "name") != 0)
-    {
-        printf("two relation field path self-test failed\n");
-        return ret == HDB_OK ? HDB_ERR_FIELD_PATH : ret;
-    }
-    ret = resolver.Resolve(*alarmDataset, "point..name", path);
-    if (ret != HDB_ERR_FIELD_PATH)
-    {
-        printf("invalid field path self-test failed: %d\n", ret);
-        return HDB_ERR_FIELD_PATH;
-    }
-    printf("field path self-test ok\n");
-    return HDB_OK;
-}
-
-static int RunQueryBuilderSelfTest()
-{
-    CHdbDatasetRegistry registry;
-    CHdbQuerySqlBuilder builder(&registry);
-    CHdbQueryAst ast;
-    HdbBuiltQuery query;
-    int ret;
-
-    ast.SetRootDataset("alarm");
-    ast.SetTimeRange(MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 14, 0, 0, 0, 0));
-    ast.AddSelect("occur_time", "time");
-    ast.AddSelect("point.device.name", "deviceName;drop table x");
-    ast.AddWhereInt32("level", HDB_OP_GE, 2);
-    ast.AddOrder("occur_time", HDB_ORDER_DESC);
-    ast.SetLimit(10, 0);
-    ret = builder.BuildSelect(ast, query);
-    if (ret != HDB_OK)
-    {
-        printf("query builder self-test failed: %s\n", builder.GetLastError());
-        return ret;
-    }
-    if (query.sql.find("left join hdb_point") == std::string::npos ||
-        query.sql.find("left join hdb_device") == std::string::npos ||
-        query.sql.find("deviceName;drop table x") != std::string::npos ||
-        query.params.size() < 5)
-    {
-        printf("query builder generated sql self-test failed: %s\n", query.sql.c_str());
-        return HDB_ERR_DB_EXEC;
-    }
-
-    ast.Clear();
-    ast.SetRootDataset("alarm");
-    ast.AddSelect("level", "level");
-    ret = builder.BuildSelect(ast, query);
-    if (ret != HDB_ERR_QUERY_NEED_TIME_RANGE)
-    {
-        printf("query need time range self-test failed: %d\n", ret);
-        return HDB_ERR_QUERY_NEED_TIME_RANGE;
-    }
-
-    ast.Clear();
-    ast.SetRootDataset("alarm;drop");
-    ast.SetTimeRange(MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 13, 0, 0, 0, 0));
-    ast.AddSelect("level", "level");
-    ret = builder.BuildSelect(ast, query);
-    if (ret == HDB_OK)
-    {
-        printf("dangerous dataset self-test failed\n");
-        return HDB_ERR_DATASET_NOT_FOUND;
-    }
-    printf("query builder self-test ok\n");
-    return HDB_OK;
-}
-
-static int RunServerQueryUnitSelfTests()
-{
-    int ret;
-
-    ret = RunQueryResultSelfTest();
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-    ret = RunShardRouterSelfTest();
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-    ret = RunFieldPathSelfTest();
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-    return RunQueryBuilderSelfTest();
-}
-
-static int RunHistoryQuerySelfTest(CHdbPgAdapter& adapter)
-{
-    CHdbDatasetRegistry registry;
-    CHdbQueryExecutor executor(&adapter, &registry);
-    CHdbQueryAst ast;
-    CHdbQueryResult result;
-    int ret;
-    int deviceCol;
-
-    ast.SetRootDataset("alarm");
-    ast.SetTimeRange(MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 14, 0, 0, 0, 0));
-    ast.AddSelect("id", "id");
-    ast.AddSelect("point.name", "pointName");
-    ast.AddSelect("point.device.name", "deviceName");
-    ast.AddWhereInt32("level", HDB_OP_GE, 2);
-    ast.AddOrder("occur_time", HDB_ORDER_DESC);
-    ast.SetLimit(10, 0);
-
-    ret = executor.Execute(ast, result);
-    if (ret != HDB_OK)
-    {
-        printf("history query execute failed: %s\n", executor.GetLastError());
-        return ret;
-    }
-    if (result.RowCount() != 2)
-    {
-        printf("history query row count failed: %d\n", result.RowCount());
-        return HDB_ERR_DB_EXEC;
-    }
-    deviceCol = result.FindColumn("deviceName");
-    if (deviceCol < 0)
-    {
-        printf("history query output name mapping failed\n");
-        return HDB_ERR_DB_EXEC;
-    }
-    if (result.IsNull(0, deviceCol) != 1 || result.IsNull(1, deviceCol) != 0)
-    {
-        printf("history query left join null failed: first=%d second=%d\n",
-            result.IsNull(0, deviceCol),
-            result.IsNull(1, deviceCol));
-        return HDB_ERR_DB_EXEC;
-    }
-    printf("history query self-test ok: rows=%d firstPoint=%s\n",
-        result.RowCount(),
-        result.GetValue(0, result.FindColumn("pointName")));
-    return HDB_OK;
+    return port;
 }
 
 static const unsigned char* GetVectorBuffer(const std::vector<unsigned char>& data)
@@ -562,95 +72,310 @@ static const unsigned char* GetVectorBuffer(const std::vector<unsigned char>& da
     return &data[0];
 }
 
-static int RunIpcProtocolSelfTest()
+static void ConvertQueryResultToIpcResult(const CHdbQueryResult& queryResult, HdbIpcResultSet& ipcResult)
 {
-    std::vector<unsigned char> body;
-    std::vector<unsigned char> packet;
-    HdbIpcFrame frame;
-    CHdbIpcFieldReader reader;
-    HdbIpcField field;
-    std::string connInfo;
-    int hasField;
-    int affectedRows;
-    int ret;
+    int rowIndex;
+    int fieldIndex;
 
-    ret = HdbIpcAppendString(body, HDB_IPC_FIELD_CONN_INFO, "host=127.0.0.1 port=5432 dbname=postgres");
-    if (ret != HDB_IPC_OK)
+    ipcResult.Clear();
+    for (fieldIndex = 0; fieldIndex < queryResult.FieldCount(); ++fieldIndex)
     {
-        return ret;
+        ipcResult.columns.push_back(queryResult.GetColumnName(fieldIndex));
     }
-    ret = HdbIpcAppendInt32(body, HDB_IPC_FIELD_AFFECTED_ROWS, 1);
-    if (ret != HDB_IPC_OK)
+    for (rowIndex = 0; rowIndex < queryResult.RowCount(); ++rowIndex)
     {
-        return ret;
-    }
+        std::vector<HdbIpcResultCell> row;
+        for (fieldIndex = 0; fieldIndex < queryResult.FieldCount(); ++fieldIndex)
+        {
+            HdbIpcResultCell cell;
 
-    ret = HdbIpcBuildRequest(HDB_IPC_CMD_DB_OPEN,
-        1001,
+            cell.isNull = queryResult.IsNull(rowIndex, fieldIndex);
+            if (cell.isNull)
+            {
+                cell.value.clear();
+            }
+            else
+            {
+                cell.value = queryResult.GetValue(rowIndex, fieldIndex);
+            }
+            row.push_back(cell);
+        }
+        ipcResult.rows.push_back(row);
+    }
+}
+
+static int BuildIpcResponse(unsigned int command,
+    unsigned int sequence,
+    int status,
+    const std::vector<unsigned char>& body,
+    std::vector<unsigned char>& responseFrame)
+{
+    return HdbIpcBuildResponse(command,
+        sequence,
+        status,
         GetVectorBuffer(body),
         (unsigned int)body.size(),
-        packet);
+        responseFrame);
+}
+
+static int BuildIpcErrorResponse(unsigned int command,
+    unsigned int sequence,
+    int status,
+    const char* errorText,
+    std::vector<unsigned char>& responseFrame)
+{
+    std::vector<unsigned char> body;
+    int ret;
+
+    if (status == HDB_OK)
+    {
+        status = HDB_ERR_DB_EXEC;
+    }
+    ret = HdbIpcAppendString(body, HDB_IPC_FIELD_ERROR_TEXT, errorText == NULL ? "" : errorText);
     if (ret != HDB_IPC_OK)
     {
         return ret;
     }
+    return BuildIpcResponse(command, sequence, status, body, responseFrame);
+}
 
-    ret = HdbIpcParseFrame(GetVectorBuffer(packet), (unsigned int)packet.size(), frame);
+static int ExecuteIpcQuery(CHdbPgAdapter& adapter,
+    const HdbIpcFrame& requestFrame,
+    std::vector<unsigned char>& responseFrame)
+{
+    CHdbIpcFieldReader reader;
+    HdbIpcField field;
+    CHdbDatasetRegistry registry;
+    CHdbQueryExecutor executor(&adapter, &registry);
+    CHdbQueryAst ast;
+    CHdbQueryResult queryResult;
+    HdbIpcResultSet ipcResult;
+    std::vector<unsigned char> body;
+    std::vector<unsigned char> schemaData;
+    std::vector<unsigned char> rowData;
+    std::string astText;
+    int hasField;
+    int hasQueryAst;
+    int ret;
+
+    hasQueryAst = 0;
+    ret = reader.Reset(requestFrame.body, requestFrame.bodyLength);
     if (ret != HDB_IPC_OK)
     {
-        return ret;
+        return BuildIpcErrorResponse(requestFrame.header.command,
+            requestFrame.header.sequence,
+            HDB_ERR_BUFFER,
+            "invalid request body",
+            responseFrame);
     }
-    if (frame.header.command != HDB_IPC_CMD_DB_OPEN ||
-        frame.header.sequence != 1001 ||
-        (frame.header.flags & HDB_IPC_FLAG_REQUEST) == 0)
+    while (1)
     {
-        return HDB_IPC_ERR_HEADER;
+        ret = reader.Next(field, &hasField);
+        if (ret != HDB_IPC_OK)
+        {
+            return BuildIpcErrorResponse(requestFrame.header.command,
+                requestFrame.header.sequence,
+                HDB_ERR_BUFFER,
+                "invalid request field",
+                responseFrame);
+        }
+        if (hasField == 0)
+        {
+            break;
+        }
+        if (field.type == HDB_IPC_FIELD_QUERY_AST)
+        {
+            ret = HdbIpcReadString(field, astText);
+            if (ret != HDB_IPC_OK)
+            {
+                return BuildIpcErrorResponse(requestFrame.header.command,
+                    requestFrame.header.sequence,
+                    HDB_ERR_BUFFER,
+                    "invalid query ast",
+                    responseFrame);
+            }
+            hasQueryAst = 1;
+        }
+    }
+    if (hasQueryAst == 0)
+    {
+        return BuildIpcErrorResponse(requestFrame.header.command,
+            requestFrame.header.sequence,
+            HDB_ERR_PARAM,
+            "query ast is missing",
+            responseFrame);
     }
 
-    ret = reader.Reset(frame.body, frame.bodyLength);
+    ret = ast.Deserialize(astText.c_str());
+    if (ret != HDB_OK)
+    {
+        return BuildIpcErrorResponse(requestFrame.header.command,
+            requestFrame.header.sequence,
+            ret,
+            "query ast deserialize failed",
+            responseFrame);
+    }
+    // SERVER 端重新校验 AST 并生成 SQL，DLL 不传递 SQL
+    ret = executor.Execute(ast, queryResult);
+    if (ret != HDB_OK)
+    {
+        return BuildIpcErrorResponse(requestFrame.header.command,
+            requestFrame.header.sequence,
+            ret,
+            executor.GetLastError(),
+            responseFrame);
+    }
+
+    ConvertQueryResultToIpcResult(queryResult, ipcResult);
+    ret = HdbIpcEncodeResultSchema(ipcResult, schemaData);
     if (ret != HDB_IPC_OK)
     {
-        return ret;
+        return BuildIpcErrorResponse(requestFrame.header.command,
+            requestFrame.header.sequence,
+            HDB_ERR_BUFFER,
+            "encode result schema failed",
+            responseFrame);
     }
-
-    ret = reader.Next(field, &hasField);
-    if (ret != HDB_IPC_OK || hasField == 0 || field.type != HDB_IPC_FIELD_CONN_INFO)
-    {
-        return ret == HDB_IPC_OK ? HDB_IPC_ERR_FIELD : ret;
-    }
-    ret = HdbIpcReadString(field, connInfo);
+    ret = HdbIpcEncodeResultRows(ipcResult, rowData);
     if (ret != HDB_IPC_OK)
     {
-        return ret;
+        return BuildIpcErrorResponse(requestFrame.header.command,
+            requestFrame.header.sequence,
+            HDB_ERR_BUFFER,
+            "encode result rows failed",
+            responseFrame);
     }
-    if (connInfo != "host=127.0.0.1 port=5432 dbname=postgres")
-    {
-        return HDB_IPC_ERR_FIELD;
-    }
-
-    ret = reader.Next(field, &hasField);
-    if (ret != HDB_IPC_OK || hasField == 0 || field.type != HDB_IPC_FIELD_AFFECTED_ROWS)
-    {
-        return ret == HDB_IPC_OK ? HDB_IPC_ERR_FIELD : ret;
-    }
-    ret = HdbIpcReadInt32(field, &affectedRows);
+    ret = HdbIpcAppendField(body,
+        HDB_IPC_FIELD_RESULT_SCHEMA,
+        schemaData.empty() ? NULL : &schemaData[0],
+        (unsigned int)schemaData.size());
     if (ret != HDB_IPC_OK)
     {
-        return ret;
+        return BuildIpcErrorResponse(requestFrame.header.command,
+            requestFrame.header.sequence,
+            HDB_ERR_BUFFER,
+            "append result schema failed",
+            responseFrame);
     }
-    if (affectedRows != 1)
+    ret = HdbIpcAppendField(body,
+        HDB_IPC_FIELD_RESULT_ROWS,
+        rowData.empty() ? NULL : &rowData[0],
+        (unsigned int)rowData.size());
+    if (ret != HDB_IPC_OK)
     {
-        return HDB_IPC_ERR_FIELD;
+        return BuildIpcErrorResponse(requestFrame.header.command,
+            requestFrame.header.sequence,
+            HDB_ERR_BUFFER,
+            "append result rows failed",
+            responseFrame);
     }
+    return BuildIpcResponse(requestFrame.header.command,
+        requestFrame.header.sequence,
+        HDB_OK,
+        body,
+        responseFrame);
+}
 
-    ret = reader.Next(field, &hasField);
-    if (ret != HDB_IPC_OK || hasField != 0)
+static int HandleIpcRequest(CHdbPgAdapter& adapter,
+    const std::vector<unsigned char>& requestBytes,
+    std::vector<unsigned char>& responseFrame)
+{
+    HdbIpcFrame requestFrame;
+    std::vector<unsigned char> body;
+    int ret;
+
+    ret = HdbIpcParseFrame(GetVectorBuffer(requestBytes), (unsigned int)requestBytes.size(), requestFrame);
+    if (ret != HDB_IPC_OK)
     {
-        return ret == HDB_IPC_OK ? HDB_IPC_ERR_FIELD : ret;
+        return BuildIpcErrorResponse(HDB_IPC_CMD_PING, 0, HDB_ERR_BUFFER, "invalid ipc frame", responseFrame);
     }
+    if ((requestFrame.header.flags & HDB_IPC_FLAG_REQUEST) == 0)
+    {
+        return BuildIpcErrorResponse(requestFrame.header.command,
+            requestFrame.header.sequence,
+            HDB_ERR_PARAM,
+            "ipc frame is not request",
+            responseFrame);
+    }
+    if (requestFrame.header.command == HDB_IPC_CMD_PING)
+    {
+        return BuildIpcResponse(requestFrame.header.command, requestFrame.header.sequence, HDB_OK, body, responseFrame);
+    }
+    if (requestFrame.header.command == HDB_IPC_CMD_DB_PING)
+    {
+        ret = adapter.Ping();
+        if (ret != HDB_OK)
+        {
+            return BuildIpcErrorResponse(requestFrame.header.command,
+                requestFrame.header.sequence,
+                ret,
+                adapter.GetLastError(),
+                responseFrame);
+        }
+        return BuildIpcResponse(requestFrame.header.command, requestFrame.header.sequence, HDB_OK, body, responseFrame);
+    }
+    if (requestFrame.header.command == HDB_IPC_CMD_QUERY_EXECUTE)
+    {
+        return ExecuteIpcQuery(adapter, requestFrame, responseFrame);
+    }
+    return BuildIpcErrorResponse(requestFrame.header.command,
+        requestFrame.header.sequence,
+        HDB_ERR_NOT_IMPLEMENTED,
+        "ipc command not implemented",
+        responseFrame);
+}
 
-    printf("ipc protocol self-test ok\n");
-    return HDB_OK;
+static int RunIpcServer(CHdbPgAdapter& adapter)
+{
+    CHdbIpcTcpServer server;
+    const char* host;
+    int port;
+    int ret;
+
+    host = ReadIpcHost();
+    port = ReadIpcPort();
+    ret = server.Open(host, port, 16);
+    if (ret != HDB_IPC_OK)
+    {
+        printf("open ipc listen failed: %s\n", server.GetLastError());
+        return 1;
+    }
+    printf("ysd_hdb_svr listening on %s:%d\n", host, port);
+    // 第一版单线程串行处理，每个 TCP 连接只承载一次请求
+    while (1)
+    {
+        CHdbIpcTcpConnection connection;
+        std::vector<unsigned char> requestFrame;
+        std::vector<unsigned char> responseFrame;
+
+        ret = server.Accept(connection);
+        if (ret != HDB_IPC_OK)
+        {
+            printf("ipc accept failed: %s\n", server.GetLastError());
+        }
+        else
+        {
+            ret = connection.RecvFrame(requestFrame);
+            if (ret == HDB_IPC_OK)
+            {
+                ret = HandleIpcRequest(adapter, requestFrame, responseFrame);
+                if (ret == HDB_IPC_OK)
+                {
+                    ret = connection.SendFrame(responseFrame);
+                }
+            }
+        }
+        if (ret != HDB_IPC_OK)
+        {
+            printf("ipc request failed: %d %s\n", ret, connection.GetLastError());
+        }
+        connection.Close();
+    }
+}
+
+static int RunSelfTest(int argc, char* argv[])
+{
+    return RunHdbSvrSelfTest(ReadSelfTestConnInfo(argc, argv));
 }
 
 int main(int argc, char* argv[])
@@ -659,69 +384,25 @@ int main(int argc, char* argv[])
     CHdbPgAdapter adapter;
     int ret;
 
-    connInfo = ReadConnInfo(argc, argv);
-    printf("ysd_hdb_svr pg crud self-test\n");
+    if (argc > 1 && strcmp(argv[1], "--selftest") == 0)
+    {
+        return RunSelfTest(argc, argv);
+    }
+    connInfo = ReadDefaultConnInfo();
+    printf("ysd_hdb_svr service mode\n");
     printf("conninfo: %s\n", connInfo);
-
-    ret = RunIpcProtocolSelfTest();
-    if (ret != HDB_OK)
-    {
-        printf("ipc protocol self-test failed: %d\n", ret);
-        return 1;
-    }
-
-    ret = RunServerQueryUnitSelfTests();
-    if (ret != HDB_OK)
-    {
-        printf("server query unit self-test failed: %d\n", ret);
-        return 1;
-    }
-
     ret = adapter.Open(connInfo);
     if (ret != HDB_OK)
     {
         printf("open postgres failed: %s\n", adapter.GetLastError());
         return 1;
     }
-
     ret = adapter.Ping();
     if (ret != HDB_OK)
     {
         printf("ping postgres failed: %s\n", adapter.GetLastError());
         return 2;
     }
-    printf("ping ok\n");
-
-    ret = CreateTestTable(adapter);
-    if (ret != HDB_OK)
-    {
-        printf("create test table failed: %s\n", adapter.GetLastError());
-        return 3;
-    }
-    printf("test table ready\n");
-
-    ret = RunCrudSelfTest(adapter);
-    if (ret != HDB_OK)
-    {
-        printf("crud self-test failed: %d\n", ret);
-        return 4;
-    }
-
-    ret = CreateHistoryQueryTables(adapter);
-    if (ret != HDB_OK)
-    {
-        printf("create history query tables failed: %s\n", adapter.GetLastError());
-        return 5;
-    }
-    ret = RunHistoryQuerySelfTest(adapter);
-    if (ret != HDB_OK)
-    {
-        printf("history query self-test failed: %d\n", ret);
-        return 6;
-    }
-
-    adapter.Close();
-    printf("crud self-test ok\n");
-    printf("query self-test ok\n");
-    return 0;
+    printf("postgres ping ok\n");
+    return RunIpcServer(adapter);
 }

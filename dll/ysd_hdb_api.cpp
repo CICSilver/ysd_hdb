@@ -1,5 +1,12 @@
-﻿#include "ysd_hdb.h"
+﻿#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
 
+#include "ysd_hdb.h"
+
+#include "../common/HdbIpcProtocol.h"
+#include "../common/HdbIpcResultCodec.h"
+#include "../common/HdbIpcSocket.h"
 #include "../common/HdbQueryAst.h"
 
 #include <stdlib.h>
@@ -12,6 +19,8 @@ struct HdbSessionTag
 {
     std::string profileName;
     std::string connInfo;
+    std::string ipcHost;
+    int ipcPort;
     std::string lastError;
 };
 
@@ -133,6 +142,204 @@ static const HdbResultCell* HdbDllGetCurrentCell(HDB_RESULT result, const char* 
     return &result->rows[result->currentRow][column];
 }
 
+static const char* HdbDllReadIpcHost()
+{
+    const char* envHost;
+
+    envHost = getenv("HDB_IPC_HOST");
+    if (envHost != NULL && envHost[0] != '\0')
+    {
+        return envHost;
+    }
+    return HDB_IPC_DEFAULT_HOST;
+}
+
+static int HdbDllReadIpcPort()
+{
+    const char* envPort;
+    int port;
+
+    envPort = getenv("HDB_IPC_PORT");
+    if (envPort == NULL || envPort[0] == '\0')
+    {
+        return HDB_IPC_DEFAULT_PORT;
+    }
+    port = atoi(envPort);
+    if (port <= 0 || port > 65535)
+    {
+        return HDB_IPC_DEFAULT_PORT;
+    }
+    return port;
+}
+
+static unsigned int HdbDllNextSequence()
+{
+    static unsigned int sequence = 1;
+    unsigned int current;
+
+    current = sequence++;
+    if (sequence == 0)
+    {
+        sequence = 1;
+    }
+    return current;
+}
+
+static int HdbDllMapIpcError(int ipcError)
+{
+    if (ipcError == HDB_IPC_ERR_BODY_SIZE ||
+        ipcError == HDB_IPC_ERR_BUFFER ||
+        ipcError == HDB_IPC_ERR_INCOMPLETE)
+    {
+        return HDB_ERR_BUFFER;
+    }
+    return HDB_ERR_DB_EXEC;
+}
+
+static int HdbDllMapResponseStatus(int status)
+{
+    if (status <= HDB_ERR_PARAM && status >= HDB_ERR_NOT_IMPLEMENTED)
+    {
+        return status;
+    }
+    if (status <= HDB_IPC_ERR_PARAM)
+    {
+        return HDB_ERR_BUFFER;
+    }
+    if (status == HDB_OK)
+    {
+        return HDB_OK;
+    }
+    return HDB_ERR_DB_EXEC;
+}
+
+static int HdbDllReadErrorText(const HdbIpcFrame& frame, std::string& errorText)
+{
+    CHdbIpcFieldReader reader;
+    HdbIpcField field;
+    int hasField;
+    int ret;
+
+    errorText.clear();
+    ret = reader.Reset(frame.body, frame.bodyLength);
+    if (ret != HDB_IPC_OK)
+    {
+        return ret;
+    }
+    while (1)
+    {
+        ret = reader.Next(field, &hasField);
+        if (ret != HDB_IPC_OK)
+        {
+            return ret;
+        }
+        if (hasField == 0)
+        {
+            return HDB_IPC_OK;
+        }
+        if (field.type == HDB_IPC_FIELD_ERROR_TEXT)
+        {
+            return HdbIpcReadString(field, errorText);
+        }
+    }
+}
+
+static int HdbDllRequest(HDB_SESSION session,
+    unsigned int command,
+    const std::vector<unsigned char>& body,
+    HdbIpcFrame& responseFrame,
+    std::vector<unsigned char>& responseBytes)
+{
+    CHdbIpcTcpClient client;
+    std::vector<unsigned char> requestBytes;
+    std::string errorText;
+    unsigned int sequence;
+    int ret;
+
+    if (session == NULL)
+    {
+        return HDB_ERR_PARAM;
+    }
+    sequence = HdbDllNextSequence();
+    ret = HdbIpcBuildRequest(command,
+        sequence,
+        body.empty() ? NULL : &body[0],
+        (unsigned int)body.size(),
+        requestBytes);
+    if (ret != HDB_IPC_OK)
+    {
+        HdbDllSetSessionError(session, "build ipc request failed");
+        return HdbDllMapIpcError(ret);
+    }
+    ret = client.Request(session->ipcHost.c_str(), session->ipcPort, requestBytes, responseBytes);
+    if (ret != HDB_IPC_OK)
+    {
+        HdbDllSetSessionError(session, client.GetLastError());
+        return HDB_ERR_NOT_CONNECTED;
+    }
+    ret = HdbIpcParseFrame(responseBytes.empty() ? NULL : &responseBytes[0],
+        (unsigned int)responseBytes.size(),
+        responseFrame);
+    if (ret != HDB_IPC_OK)
+    {
+        HdbDllSetSessionError(session, "parse ipc response failed");
+        return HdbDllMapIpcError(ret);
+    }
+    if ((responseFrame.header.flags & HDB_IPC_FLAG_RESPONSE) == 0 ||
+        responseFrame.header.command != command ||
+        responseFrame.header.sequence != sequence)
+    {
+        HdbDllSetSessionError(session, "invalid ipc response");
+        return HDB_ERR_BUFFER;
+    }
+    if (responseFrame.header.status != HDB_OK)
+    {
+        ret = HdbDllReadErrorText(responseFrame, errorText);
+        if (ret == HDB_IPC_OK && !errorText.empty())
+        {
+            HdbDllSetSessionError(session, errorText.c_str());
+        }
+        else
+        {
+            HdbDllSetSessionError(session, "server returned error");
+        }
+        return HdbDllMapResponseStatus(responseFrame.header.status);
+    }
+    return HDB_OK;
+}
+
+static int HdbDllFillResult(HDB_SESSION session, const HdbIpcResultSet& ipcResult, HDB_RESULT* outResult)
+{
+    HDB_RESULT result;
+    int rowIndex;
+
+    if (outResult == NULL)
+    {
+        return HDB_ERR_PARAM;
+    }
+    result = new HdbResultTag();
+    result->session = session;
+    result->columns = ipcResult.columns;
+    result->currentRow = -1;
+    for (rowIndex = 0; rowIndex < (int)ipcResult.rows.size(); ++rowIndex)
+    {
+        std::vector<HdbResultCell> row;
+        int fieldIndex;
+
+        for (fieldIndex = 0; fieldIndex < (int)ipcResult.rows[rowIndex].size(); ++fieldIndex)
+        {
+            HdbResultCell cell;
+
+            cell.value = ipcResult.rows[rowIndex][fieldIndex].value;
+            cell.isNull = ipcResult.rows[rowIndex][fieldIndex].isNull;
+            row.push_back(cell);
+        }
+        result->rows.push_back(row);
+    }
+    *outResult = result;
+    return HDB_OK;
+}
+
 int HDB_CALL HdbOpen(const char* profileName, HDB_SESSION* outSession)
 {
     HDB_SESSION session;
@@ -147,6 +354,8 @@ int HDB_CALL HdbOpen(const char* profileName, HDB_SESSION* outSession)
     {
         session->profileName = profileName;
     }
+    session->ipcHost = HdbDllReadIpcHost();
+    session->ipcPort = HdbDllReadIpcPort();
     *outSession = session;
     return HDB_OK;
 }
@@ -180,12 +389,15 @@ int HDB_CALL HdbClose(HDB_SESSION session)
 
 int HDB_CALL HdbPing(HDB_SESSION session)
 {
+    HdbIpcFrame responseFrame;
+    std::vector<unsigned char> body;
+    std::vector<unsigned char> responseBytes;
+
     if (session == NULL)
     {
         return HDB_ERR_PARAM;
     }
-    HdbDllSetSessionError(session, "IPC transport is not implemented");
-    return HDB_ERR_NOT_IMPLEMENTED;
+    return HdbDllRequest(session, HDB_IPC_CMD_DB_PING, body, responseFrame, responseBytes);
 }
 
 int HDB_CALL HdbGetLastError(HDB_SESSION session, char* buffer, int bufferSize, int* requiredSize)
@@ -206,7 +418,7 @@ int HDB_CALL HdbInsertRow(HDB_SESSION session, const char* datasetName, const vo
     {
         return HDB_ERR_PARAM;
     }
-    HdbDllSetSessionError(session, "dataset insert requires IPC transport");
+    HdbDllSetSessionError(session, "dataset insert is not implemented");
     return HDB_ERR_NOT_IMPLEMENTED;
 }
 
@@ -391,13 +603,93 @@ int HDB_CALL HdbQueryLimit(HDB_QUERY query, int limit, int offset)
 
 int HDB_CALL HdbQueryExecute(HDB_QUERY query, HDB_RESULT* outResult)
 {
+    HdbIpcFrame responseFrame;
+    CHdbIpcFieldReader reader;
+    HdbIpcField field;
+    HdbIpcResultSet ipcResult;
+    std::vector<unsigned char> body;
+    std::vector<unsigned char> responseBytes;
+    std::string astText;
+    int hasField;
+    int hasSchema;
+    int hasRows;
+    int ret;
+
     if (query == NULL || outResult == NULL)
     {
         return HDB_ERR_PARAM;
     }
     *outResult = NULL;
-    HdbDllSetQueryError(query, "query execute requires IPC transport");
-    return HDB_ERR_NOT_IMPLEMENTED;
+    ret = query->ast.Serialize(astText);
+    if (ret != 0)
+    {
+        HdbDllSetQueryError(query, "serialize query ast failed");
+        return HDB_ERR_PARAM;
+    }
+    ret = HdbIpcAppendString(body, HDB_IPC_FIELD_QUERY_AST, astText.c_str());
+    if (ret != HDB_IPC_OK)
+    {
+        HdbDllSetQueryError(query, "build query ipc body failed");
+        return HdbDllMapIpcError(ret);
+    }
+    ret = HdbDllRequest(query->session,
+        HDB_IPC_CMD_QUERY_EXECUTE,
+        body,
+        responseFrame,
+        responseBytes);
+    if (ret != HDB_OK)
+    {
+        HdbDllSetQueryError(query, query->session->lastError.c_str());
+        return ret;
+    }
+
+    hasSchema = 0;
+    hasRows = 0;
+    ret = reader.Reset(responseFrame.body, responseFrame.bodyLength);
+    if (ret != HDB_IPC_OK)
+    {
+        HdbDllSetQueryError(query, "invalid query response body");
+        return HDB_ERR_BUFFER;
+    }
+    while (1)
+    {
+        ret = reader.Next(field, &hasField);
+        if (ret != HDB_IPC_OK)
+        {
+            HdbDllSetQueryError(query, "invalid query response field");
+            return HDB_ERR_BUFFER;
+        }
+        if (hasField == 0)
+        {
+            break;
+        }
+        if (field.type == HDB_IPC_FIELD_RESULT_SCHEMA)
+        {
+            ret = HdbIpcDecodeResultSchema(field.data, field.length, ipcResult);
+            if (ret != HDB_IPC_OK)
+            {
+                HdbDllSetQueryError(query, "decode query result schema failed");
+                return HDB_ERR_BUFFER;
+            }
+            hasSchema = 1;
+        }
+        else if (field.type == HDB_IPC_FIELD_RESULT_ROWS)
+        {
+            ret = HdbIpcDecodeResultRows(field.data, field.length, ipcResult);
+            if (ret != HDB_IPC_OK)
+            {
+                HdbDllSetQueryError(query, "decode query result rows failed");
+                return HDB_ERR_BUFFER;
+            }
+            hasRows = 1;
+        }
+    }
+    if (hasSchema == 0 || hasRows == 0)
+    {
+        HdbDllSetQueryError(query, "query response missing result data");
+        return HDB_ERR_BUFFER;
+    }
+    return HdbDllFillResult(query->session, ipcResult, outResult);
 }
 
 int HDB_CALL HdbResultFree(HDB_RESULT result)

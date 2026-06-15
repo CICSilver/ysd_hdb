@@ -21,7 +21,16 @@
     <ClCompile Include="..\common\HdbIpcProtocol.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="..\common\HdbIpcResultCodec.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="..\common\HdbIpcSocket.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="..\common\HdbQueryAst.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="..\test\HdbSvrSelfTest.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="HdbDatasetRegistry.cpp">
@@ -56,7 +65,16 @@
     <ClInclude Include="..\common\HdbIpcProtocol.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="..\common\HdbIpcResultCodec.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\HdbIpcSocket.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="..\common\HdbQueryAst.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="..\test\HdbSvrSelfTest.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="HdbCommon.h">

@@ -80,7 +80,7 @@
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(ProjectDir)include\PostgreSQL\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>libpq.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>libpq.lib;Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -100,7 +100,7 @@
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(ProjectDir)include\PostgreSQL\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>libpq.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>libpq.lib;Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -118,7 +118,7 @@
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(ProjectDir)include\PostgreSQL\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>libpq.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>libpq.lib;Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -138,7 +138,7 @@
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(ProjectDir)include\PostgreSQL\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>libpq.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>libpq.lib;Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -148,7 +148,10 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\common\HdbIpcProtocol.cpp" />
+    <ClCompile Include="..\common\HdbIpcResultCodec.cpp" />
+    <ClCompile Include="..\common\HdbIpcSocket.cpp" />
     <ClCompile Include="..\common\HdbQueryAst.cpp" />
+    <ClCompile Include="..\test\HdbSvrSelfTest.cpp" />
     <ClCompile Include="HdbDatasetRegistry.cpp" />
     <ClCompile Include="HdbDbAdapter.cpp" />
     <ClCompile Include="HdbFieldPathResolver.cpp" />
@@ -161,7 +164,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\common\HdbIpcProtocol.h" />
+    <ClInclude Include="..\common\HdbIpcResultCodec.h" />
+    <ClInclude Include="..\common\HdbIpcSocket.h" />
     <ClInclude Include="..\common\HdbQueryAst.h" />
+    <ClInclude Include="..\test\HdbSvrSelfTest.h" />
     <ClInclude Include="HdbCommon.h" />
     <ClInclude Include="HdbDatasetRegistry.h" />
     <ClInclude Include="HdbDbAdapter.h" />

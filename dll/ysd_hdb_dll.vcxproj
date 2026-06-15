@@ -81,6 +81,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableUAC>false</EnableUAC>
     </Link>
     <Manifest>
@@ -100,6 +101,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableUAC>false</EnableUAC>
     </Link>
     <Manifest>
@@ -117,6 +119,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableUAC>false</EnableUAC>
     </Link>
     <Manifest>
@@ -136,6 +139,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableUAC>false</EnableUAC>
     </Link>
     <Manifest>
@@ -144,12 +148,16 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\common\HdbIpcProtocol.cpp" />
+    <ClCompile Include="..\common\HdbIpcResultCodec.cpp" />
+    <ClCompile Include="..\common\HdbIpcSocket.cpp" />
     <ClCompile Include="..\common\HdbQueryAst.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="ysd_hdb_api.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\common\HdbIpcProtocol.h" />
+    <ClInclude Include="..\common\HdbIpcResultCodec.h" />
+    <ClInclude Include="..\common\HdbIpcSocket.h" />
     <ClInclude Include="..\common\HdbQueryAst.h" />
     <ClInclude Include="ysd_hdb.h" />
   </ItemGroup>
