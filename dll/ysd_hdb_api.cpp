@@ -487,22 +487,12 @@ int HDB_CALL HdbOpen(const char* profileName, HDB_SESSION* outSession)
 
 int HDB_CALL HdbOpenByConnInfo(const char* connInfo, HDB_SESSION* outSession)
 {
-    HDB_SESSION session;
-    int ret;
-
     if (outSession == NULL)
     {
         return HDB_ERR_PARAM;
     }
     *outSession = NULL;
     (void)connInfo;
-    ret = HdbOpen("conninfo", &session);
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-    *outSession = session;
-    HdbDllSetSessionError(session, "open by conninfo is not implemented");
     return HDB_ERR_NOT_IMPLEMENTED;
 }
 
