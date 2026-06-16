@@ -76,7 +76,7 @@ static HdbDatasetDef g_hdbDatasets[] =
 
 static HdbRelationDef g_hdbRelations[] =
 {
-    // relation 名称用于字段路径解析，例如 alarm.point.device.name
+    // relation 名称用于字段路径解析，例如 alarm 到 point 到 device 到 name
     { "alarm", "point", "point", "point_id", "id", HDB_JOIN_LEFT },
     { "point", "device", "device", "device_id", "id", HDB_JOIN_LEFT }
 };
@@ -171,7 +171,7 @@ int CHdbDatasetRegistry::ValidateDataset(const HdbDatasetDef& dataset) const
     }
     else if (dataset.shard.shardType == HDB_SHARD_DAY)
     {
-        // 日分片必须能找到 route 字段，否则无法从时间范围推导物理表
+        // 日分片需要 route 字段来从时间范围推导物理表
         if (ValidateIdentifier(dataset.shard.tablePrefix) != HDB_OK ||
             FindField(dataset, dataset.shard.routeFieldName) == NULL)
         {

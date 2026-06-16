@@ -7,27 +7,28 @@
 #include <string>
 #include <vector>
 
-#define HDB_IPC_MAX_RESULT_COLUMNS 1024
-#define HDB_IPC_MAX_RESULT_ROWS HDB_QUERY_MAX_LIMIT
-#define HDB_IPC_MAX_RESULT_CELL_BYTES (1024u * 1024u)
-#define HDB_IPC_MAX_QUERY_AST_BYTES (1024u * 1024u)
+#define HDB_IPC_MAX_RESULT_COLUMNS 1024 // schema 最大列数
+#define HDB_IPC_MAX_RESULT_ROWS HDB_QUERY_MAX_LIMIT // 单页最大行数
+#define HDB_IPC_MAX_RESULT_CELL_BYTES (1024u * 1024u) // 单元格文本上限
+#define HDB_IPC_MAX_QUERY_AST_BYTES (1024u * 1024u) // 查询 AST 文本上限
 
+// result schema 列
 struct HdbIpcResultColumn
 {
-    std::string name;
-    int fieldType;
+    std::string name; // 输出列名
+    int fieldType;    // HdbFieldType
 };
 
 struct HdbIpcResultCell
 {
-    std::string value;
-    int isNull;
+    std::string value; // 数据库文本值
+    int isNull;        // 1 表示数据库 NULL
 };
 
 struct HdbIpcResultSet
 {
-    std::vector<HdbIpcResultColumn> columns;
-    std::vector< std::vector<HdbIpcResultCell> > rows;
+    std::vector<HdbIpcResultColumn> columns;          // schema 列
+    std::vector< std::vector<HdbIpcResultCell> > rows; // 行数据
 
     void Clear();
 };

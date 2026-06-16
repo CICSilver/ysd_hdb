@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-// TLV 字段中的整数统一按小端写入，避免结构体补齐影响协议内容
+// TLV 整数 value 按低字节在前写入，不直接拷贝整数对象
 static void HdbIpcWriteUInt32(unsigned char* buffer, unsigned int value)
 {
     buffer[0] = (unsigned char)(value & 0xffu);
@@ -43,7 +43,7 @@ static unsigned long long HdbIpcReadUInt64(const unsigned char* buffer)
 
 static int HdbIpcCheckBodyPointer(const void* body, unsigned int bodyLength)
 {
-    // 空 body 可以传 NULL，非空 body 必须传有效地址
+    // 空 body 可以是 NULL，非空 body 传有效地址
     if (bodyLength > HDB_IPC_MAX_BODY_LENGTH)
     {
         return HDB_IPC_ERR_BODY_SIZE;
@@ -331,7 +331,6 @@ int HdbIpcAppendField(std::vector<unsigned char>& body,
     }
 
     memset(&header, 0, sizeof(header));
-    // TLV 让可选字段和命令演进相互独立
     header.type = type;
     header.flags = 0;
     header.length = length;

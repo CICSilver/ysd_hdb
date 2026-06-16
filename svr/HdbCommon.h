@@ -8,11 +8,11 @@
 #endif
 
 #ifdef _WIN32
-#define HDB_SNPRINTF _snprintf
-#define HDB_INT64_FORMAT "%I64d"
+#define HDB_SNPRINTF _snprintf // VS2010 snprintf 兼容入口
+#define HDB_INT64_FORMAT "%I64d" // MSVC long long 格式
 #else
-#define HDB_SNPRINTF snprintf
-#define HDB_INT64_FORMAT "%lld"
+#define HDB_SNPRINTF snprintf // POSIX snprintf
+#define HDB_INT64_FORMAT "%lld" // GCC long long 格式
 #endif
 
 #endif

@@ -16,24 +16,27 @@ enum HdbQueryValueType
     HDB_QVT_STRING = 4 // 字符串条件值
 };
 
+// select 描述结果列
 struct HdbQuerySelectItem
 {
-    std::string fieldPath;
-    std::string outputName;
+    std::string fieldPath;  // 逻辑字段路径
+    std::string outputName; // DLL 取值列名
 };
 
+// 当前 where 只有 AND 组合，没有 OR、IN、GROUP BY
 struct HdbQueryWhereItem
 {
-    std::string fieldPath;
-    int op;
-    int valueType;
-    std::string valueText;
+    std::string fieldPath; // 逻辑字段路径
+    int op;                // HdbCompareOp
+    int valueType;         // HdbQueryValueType
+    std::string valueText; // valueType 转成的内部文本
 };
 
+// order 描述排序列
 struct HdbQueryOrderItem
 {
-    std::string fieldPath;
-    int orderType;
+    std::string fieldPath; // 逻辑字段路径
+    int orderType;         // HdbOrderType
 };
 
 class CHdbQueryAst
@@ -52,19 +55,20 @@ public:
     int AddOrder(const char* fieldPath, int orderType);
     int SetLimit(int limit, int offset);
 
+    // Serialize 只透出文本，具体格式在 CHdbQueryAstCodec
     int Serialize(std::string& text) const;
     int Deserialize(const char* text);
 
 public:
-    std::string rootDataset;
-    int hasTimeRange;
-    HdbQueryInt64 beginMs;
-    HdbQueryInt64 endMs;
-    std::vector<HdbQuerySelectItem> selects;
-    std::vector<HdbQueryWhereItem> wheres;
-    std::vector<HdbQueryOrderItem> orders;
-    int limit;
-    int offset;
+    std::string rootDataset;                 // 逻辑数据集名
+    int hasTimeRange;                        // 是否带时间范围
+    HdbQueryInt64 beginMs;                   // epoch milliseconds 起始值
+    HdbQueryInt64 endMs;                     // epoch milliseconds 结束值
+    std::vector<HdbQuerySelectItem> selects; // 结果列
+    std::vector<HdbQueryWhereItem> wheres;   // AND 条件，当前没有 OR
+    std::vector<HdbQueryOrderItem> orders;   // 排序字段
+    int limit;                               // 单次最多返回行数
+    int offset;                              // 起始偏移
 
 private:
     int AddWhereText(const char* fieldPath, int op, int valueType, const std::string& valueText);

@@ -198,7 +198,7 @@ int CHdbModelCrud::InsertModelToTable(const HdbModelDef& def, const char* tableN
     sql << ")";
 
     values.clear();
-    // 第二遍按相同字段顺序生成参数，保持 $1..$n 与列名一一对应
+    // 第二遍按相同字段顺序生成参数，保持占位符与列名一一对应
     for (i = 0; i < def.fieldCount; ++i)
     {
         const HdbFieldDef& field = def.fields[i];
@@ -641,7 +641,7 @@ int CHdbModelCrud::BuildFieldValue(const HdbFieldDef& field, const void* model, 
         break;
     case HDB_FT_CHAR_ARRAY:
         text = (const char*)base;
-        // char 数组按声明长度截断读取，不要求调用方一定有结尾零
+        // char 数组按声明长度截断读取，结尾零可有可无
         value.assign(text, HdbStrnlen(text, (size_t)field.size));
         break;
     case HDB_FT_TIMESTAMP_MS:

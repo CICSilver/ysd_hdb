@@ -444,7 +444,7 @@ static int HdbDllRequest(HDB_SESSION session,
         responseFrame.header.command != command ||
         responseFrame.header.sequence != sequence)
     {
-        // 响应必须回到同一个命令和 sequence，避免短连接异常串帧
+        // 响应回到同一个命令和 sequence，避免短连接异常串帧
         HdbDllSetSessionError(session, "invalid ipc response");
         return HDB_ERR_BUFFER;
     }

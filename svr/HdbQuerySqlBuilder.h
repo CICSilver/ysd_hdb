@@ -8,16 +8,18 @@
 #include <string>
 #include <vector>
 
+// SQL builder 输出
 struct HdbBuiltQuery
 {
-    std::string sql;
-    std::vector<std::string> params;
-    std::vector<std::string> outputNames;
-    std::vector<int> outputTypes;
+    std::string sql;                      // 参数化 SQL
+    std::vector<std::string> params;      // 占位符参数文本
+    std::vector<std::string> outputNames; // DLL 取值列名
+    std::vector<int> outputTypes;         // select 输出类型
 
     void Clear();
 };
 
+// 逻辑查询转参数化 SQL
 class CHdbQuerySqlBuilder
 {
 public:
@@ -29,12 +31,12 @@ public:
 private:
     struct JoinInfo
     {
-        std::string path;
-        const HdbRelationDef* relation;
-        const HdbDatasetDef* fromDataset;
-        const HdbDatasetDef* toDataset;
-        std::string fromAlias;
-        std::string toAlias;
+        std::string path;                 // relation 链路径
+        const HdbRelationDef* relation;   // 当前 relation
+        const HdbDatasetDef* fromDataset; // 起始数据集
+        const HdbDatasetDef* toDataset;   // 目标数据集
+        std::string fromAlias;            // 起始表别名
+        std::string toAlias;              // 目标表别名
     };
 
     int ResolveAndCollect(const CHdbQueryAst& ast,
@@ -67,6 +69,7 @@ private:
     int AppendFieldExpr(const HdbResolvedFieldPath& path,
         const std::vector<JoinInfo>& joins,
         std::string& outExpr);
+    // where 参数值在这里按字段类型转成数据库文本
     int FormatWhereParamValue(const HdbResolvedFieldPath& path,
         const HdbQueryWhereItem& whereItem,
         std::string& outValue);
@@ -79,9 +82,9 @@ private:
     void SetLastError(const char* text);
 
 private:
-    const CHdbDatasetRegistry* m_registry;
-    CHdbShardRouter m_router;
-    std::string m_lastError;
+    const CHdbDatasetRegistry* m_registry; // 元数据注册表
+    CHdbShardRouter m_router;              // 分片表路由
+    std::string m_lastError;               // 最近错误文本
 };
 
 #endif

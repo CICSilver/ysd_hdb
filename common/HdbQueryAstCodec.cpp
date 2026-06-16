@@ -19,7 +19,7 @@ static int HdbQueryCodecContainsUnsafeChar(const std::string& text)
 {
     size_t index;
 
-    // 文本格式用换行和竖线做分隔，这些字符不能进入业务字段
+    // 文本格式用换行和竖线做分隔，这些字符不进入业务字段
     for (index = 0; index < text.size(); ++index)
     {
         if (text[index] == '\n' || text[index] == '\r' || text[index] == '|')
@@ -175,7 +175,7 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
         {
             continue;
         }
-        // 版本行必须先出现，避免旧格式被当成当前格式继续解析
+        // 版本行先出现，避免旧格式被当成当前格式继续解析
         if (line.find("ast_version=") == 0)
         {
             int version;

@@ -19,56 +19,78 @@
 #endif
 #endif
 
-typedef struct HdbSessionTag* HDB_SESSION;
-typedef struct HdbQueryTag* HDB_QUERY;
-typedef struct HdbResultTag* HDB_RESULT;
+typedef struct HdbSessionTag* HDB_SESSION; // DLL 到 SERVER 的 IPC 会话
+typedef struct HdbQueryTag* HDB_QUERY;     // 逻辑查询句柄
+typedef struct HdbResultTag* HDB_RESULT;   // 查询结果句柄
 
-// XXX 当前版本 HDB_SESSION 不保证多线程并发调用安全
-// XXX HDB_QUERY 和 HDB_RESULT 只支持单线程构造、执行和遍历
-// XXX 多线程场景请每个线程独立创建 HDB_SESSION，且不要共享 HDB_QUERY/HDB_RESULT
+// XXX 同一个 HDB_QUERY 或 HDB_RESULT 按单线程使用
 
+// 创建 DLL 侧 session 句柄，当前不会直接连接数据库
 HDB_API int HDB_CALL HdbOpen(const char* profileName, HDB_SESSION* outSession);
+// 当前连接串不从 DLL 传入，数据库连接由 SERVER 启动配置决定
 HDB_API int HDB_CALL HdbOpenByConnInfo(const char* connInfo, HDB_SESSION* outSession);
+// 释放 HDB_SESSION，返回后 session 句柄不可再用于任何接口
 HDB_API int HDB_CALL HdbClose(HDB_SESSION session);
+// 通过 IPC 探测 SERVER 和数据库 adapter 状态
 HDB_API int HDB_CALL HdbPing(HDB_SESSION session);
 
+// 复制最近错误文本，requiredSize 包含结尾零，buffer 不足时返回 HDB_ERR_BUFFER
 HDB_API int HDB_CALL HdbGetLastError(HDB_SESSION session,
     char* buffer,
     int bufferSize,
     int* requiredSize);
 
+// 当前预留接口
+// datasetName 是逻辑数据集名，不是物理表名
+// row 按连续内存解释，rowSize 对齐 SERVER 元数据里的 modelSize
 HDB_API int HDB_CALL HdbInsertRow(HDB_SESSION session,
     const char* datasetName,
     const void* row,
     int rowSize);
 
+// 当前预留接口
+// rows 是 rowCount 条连续 row 内存，每条 row 的大小都按 rowSize 解释
 HDB_API int HDB_CALL HdbBatchInsertRows(HDB_SESSION session,
     const char* datasetName,
     const void* rows,
     int rowSize,
     int rowCount);
 
+// 创建逻辑查询句柄，datasetName 取注册表里的逻辑数据集名
 HDB_API int HDB_CALL HdbQueryCreate(HDB_SESSION session,
     const char* datasetName,
     HDB_QUERY* outQuery);
+// 释放未执行或已执行的查询句柄，不会释放 HDB_RESULT
 HDB_API int HDB_CALL HdbQueryFree(HDB_QUERY query);
+// 查询时间范围使用 epoch milliseconds，SERVER 侧按左闭右开范围拼条件
 HDB_API int HDB_CALL HdbQueryTimeRange(HDB_QUERY query, HdbInt64 beginMs, HdbInt64 endMs);
+// fieldPath 是逻辑字段路径，不是 SQL 片段，outputName 是结果取值用的列名
 HDB_API int HDB_CALL HdbQuerySelectPath(HDB_QUERY query, const char* fieldPath, const char* outputName);
+// where 条件只描述逻辑字段、比较符和值，SERVER 侧还会校验字段类型
 HDB_API int HDB_CALL HdbQueryWhereInt32(HDB_QUERY query, const char* fieldPath, int op, int value);
 HDB_API int HDB_CALL HdbQueryWhereInt64(HDB_QUERY query, const char* fieldPath, int op, HdbInt64 value);
 HDB_API int HDB_CALL HdbQueryWhereDouble(HDB_QUERY query, const char* fieldPath, int op, double value);
 HDB_API int HDB_CALL HdbQueryWhereStringEq(HDB_QUERY query, const char* fieldPath, const char* value);
 HDB_API int HDB_CALL HdbQueryWhereStringLike(HDB_QUERY query, const char* fieldPath, const char* pattern);
+// 排序字段同样走 fieldPath，不接收 SQL order 片段
 HDB_API int HDB_CALL HdbQueryOrderBy(HDB_QUERY query, const char* fieldPath, int orderType);
+// limit 为 0 时使用 SERVER 默认上限，offset 保持非负
 HDB_API int HDB_CALL HdbQueryLimit(HDB_QUERY query, int limit, int offset);
+// 执行成功后 outResult 交给调用方，后续用 HdbResultFree 释放
 HDB_API int HDB_CALL HdbQueryExecute(HDB_QUERY query, HDB_RESULT* outResult);
 
+// 释放查询结果句柄，释放后所有列名和单元格缓存都失效
 HDB_API int HDB_CALL HdbResultFree(HDB_RESULT result);
+// 游标前进一行，hasRow 为 0 表示已经到末尾
 HDB_API int HDB_CALL HdbResultNext(HDB_RESULT result, int* hasRow);
+// 读取值前先判断 NULL，数值 getter 遇到 NULL 会返回 HDB_ERR_NULL_VALUE
 HDB_API int HDB_CALL HdbResultIsNull(HDB_RESULT result, const char* outputName, int* isNull);
+// 数值 getter 按 result schema 校验类型后再转换文本值
 HDB_API int HDB_CALL HdbResultGetInt32(HDB_RESULT result, const char* outputName, int* value);
+// HDB_FT_TIMESTAMP_MS 对外按 epoch milliseconds 的 HdbInt64 读取
 HDB_API int HDB_CALL HdbResultGetInt64(HDB_RESULT result, const char* outputName, HdbInt64* value);
 HDB_API int HDB_CALL HdbResultGetDouble(HDB_RESULT result, const char* outputName, double* value);
+// 字符串 getter 采用调用方缓冲区，requiredSize 同样包含结尾零
 HDB_API int HDB_CALL HdbResultGetString(HDB_RESULT result,
     const char* outputName,
     char* buffer,

@@ -5,12 +5,12 @@
 
 #include <string>
 
-#define HDB_QUERY_AST_VERSION 1
-#define HDB_QUERY_AST_MAX_BYTES (1024u * 1024u)
-#define HDB_QUERY_MAX_SELECT_COUNT 128
-#define HDB_QUERY_MAX_WHERE_COUNT 128
-#define HDB_QUERY_MAX_ORDER_COUNT 16
-#define HDB_QUERY_MAX_TEXT_LENGTH 4096
+#define HDB_QUERY_AST_VERSION 1 // AST 文本版本
+#define HDB_QUERY_AST_MAX_BYTES (1024u * 1024u) // AST 文本字节上限
+#define HDB_QUERY_MAX_SELECT_COUNT 128 // select 最大项数
+#define HDB_QUERY_MAX_WHERE_COUNT 128 // where 最大项数
+#define HDB_QUERY_MAX_ORDER_COUNT 16 // order 最大项数
+#define HDB_QUERY_MAX_TEXT_LENGTH 4096 // 单段文本上限
 
 class CHdbQueryAstCodec
 {
@@ -22,6 +22,7 @@ public:
     const char* GetLastError() const;
 
 private:
+    // Decode 入口共用的文本校验
     int ValidateText(const std::string& text, const char* name);
     int ValidateCompareOp(int op);
     int ValidateValueType(int valueType);
@@ -34,7 +35,7 @@ private:
     void SetLastError(const char* text);
 
 private:
-    std::string m_lastError;
+    std::string m_lastError; // 最近错误文本
 };
 
 #endif

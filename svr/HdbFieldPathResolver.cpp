@@ -122,7 +122,7 @@ int CHdbFieldPathResolver::SplitPath(const char* fieldPath, std::vector<std::str
             segment = text.substr(pos, next - pos);
             pos = next + 1;
         }
-        // 空段会在 ValidateSegment 中被拒绝，防止 a..b 这类路径
+        // 空段会在 ValidateSegment 中被拒绝，防止连续分隔符路径
         if (ValidateSegment(segment.c_str()) != HDB_OK)
         {
             return HDB_ERR_FIELD_PATH;
@@ -151,7 +151,7 @@ int CHdbFieldPathResolver::ValidateSegment(const char* segment)
         SetLastError("field path segment must start with a letter or underscore");
         return HDB_ERR_FIELD_PATH;
     }
-    // 字段路径只允许标识符字符，后续 SQL 拼接才可以只信任元数据名
+    // 字段路径只接收标识符字符，后续 SQL 拼接才信任元数据名
     for (i = 1; segment[i] != '\0'; ++i)
     {
         if (!(isalnum((unsigned char)segment[i]) || segment[i] == '_'))

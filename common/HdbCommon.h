@@ -5,8 +5,9 @@
 extern "C" {
 #endif
 
-typedef long long HdbInt64;
+typedef long long HdbInt64; // DLL 对外 64 位整数
 
+// DLL 对外错误码
 enum HdbErrorCode
 {
     HDB_OK = 0, // 成功
@@ -25,9 +26,9 @@ enum HdbErrorCode
     HDB_ERR_QUERY_NEED_TIME_RANGE = -13, // 按时间分片的数据集查询缺少时间范围
     HDB_ERR_QUERY_RANGE = -14, // 查询时间范围、分页范围或排序条件非法
     HDB_ERR_SHARD_DEF = -15, // 分片元数据定义非法
-    HDB_ERR_SHARD_NOT_FOUND = -16, // 必须访问的物理分片表不存在
-    HDB_ERR_NOT_IMPLEMENTED = -17, // 接口已预留但当前阶段尚未实现
-    HDB_ERR_NULL_VALUE = -18, // 当前值为 NULL，不能按普通值读取
+    HDB_ERR_SHARD_NOT_FOUND = -16, // 要访问的物理分片表不存在
+    HDB_ERR_NOT_IMPLEMENTED = -17, // 预留接口尚未实现
+    HDB_ERR_NULL_VALUE = -18, // 当前值为 NULL，不按普通值读取
     HDB_ERR_TYPE_MISMATCH = -19, // 字段类型或文本转换结果与读取接口不匹配
     HDB_ERR_INTERNAL = -20 // 模块内部发生未预期异常
 };
@@ -49,6 +50,7 @@ enum HdbOrderType
     HDB_ORDER_DESC = 2 // 降序
 };
 
+// DLL 和 result schema 共用字段类型
 enum HdbFieldType
 {
     HDB_FT_INT32 = 1, // 32 位有符号整数，对应数据库 integer/int4
@@ -56,13 +58,13 @@ enum HdbFieldType
     HDB_FT_DOUBLE = 3, // 双精度浮点数，对应数据库 double precision
     HDB_FT_SMALLINT = 4, // 16 位有符号整数，对应数据库 smallint/int2
     HDB_FT_CHAR_ARRAY = 5, // 固定长度 char 数组，按字符串字段处理
-    HDB_FT_TIMESTAMP_MS = 6 // 毫秒时间戳，Model 中存 epoch ms，数据库侧按 timestamp 写入
+    HDB_FT_TIMESTAMP_MS = 6 // 毫秒时间戳，Model 中存 epoch ms，数据库按 timestamp 写入
 };
 
 #define HDB_ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
 
-#define HDB_QUERY_DEFAULT_LIMIT 1000
-#define HDB_QUERY_MAX_LIMIT 10000
+#define HDB_QUERY_DEFAULT_LIMIT 1000 // 默认查询行数
+#define HDB_QUERY_MAX_LIMIT 10000 // 查询行数硬上限
 
 #ifdef __cplusplus
 }

@@ -356,7 +356,7 @@ int CHdbIpcCommandHandler::BuildIpcErrorResponse(unsigned int command,
 
     if (status == HDB_OK)
     {
-        // 错误响应不能带成功码，避免调用方把错误文本当成功结果
+        // 错误响应避开成功码，避免调用方把错误文本当成功结果
         status = HDB_ERR_DB_EXEC;
     }
     ret = HdbIpcAppendString(body, HDB_IPC_FIELD_ERROR_TEXT, errorText == NULL ? "" : errorText);

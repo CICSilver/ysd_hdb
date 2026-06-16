@@ -5,7 +5,7 @@
 
 #include <stddef.h>
 
-// XXX 字段标记用于控制字段参与哪些自动生成的 SQL
+// XXX 字段标记控制自动 SQL 的字段范围
 enum HdbFieldFlag
 {
     HDB_FIELD_PK = 0x01, // 主键字段，用于 WHERE 条件
@@ -13,24 +13,27 @@ enum HdbFieldFlag
     HDB_FIELD_UPDATE = 0x04, // 参与 UPDATE SET 语句
     HDB_FIELD_READONLY = 0x08 // 只读字段，即使可见也不参与 UPDATE
 };
+// 字段定义
 struct HdbFieldDef
 {
-    const char* fieldName;
-    const char* columnName;
-    HdbFieldType type;
-    int offset;
-    int size;
-    int flags;
+    const char* fieldName;  // 逻辑字段名
+    const char* columnName; // 数据库列名
+    HdbFieldType type;     // 字段类型
+    int offset;            // row struct 内偏移
+    int size;              // char 数组长度
+    int flags;             // HdbFieldFlag 组合
 };
 
+// 单表 CRUD 元数据
 struct HdbModelDef
 {
-    const char* tableName;
-    int modelSize;
-    const HdbFieldDef* fields;
-    int fieldCount;
+    const char* tableName;       // 物理表名
+    int modelSize;               // row struct 字节数
+    const HdbFieldDef* fields;   // 字段数组
+    int fieldCount;              // 字段数量
 };
 
+// 物理表路由类型
 enum HdbShardType
 {
     HDB_SHARD_NONE = 0, // 非分片表，直接访问固定物理表
@@ -47,20 +50,21 @@ enum HdbMissingShardPolicy
 
 struct HdbShardDef
 {
-    HdbShardType shardType;
-    const char* tableName;
-    const char* tablePrefix;
-    const char* routeFieldName;
-    int missingPolicy;
+    HdbShardType shardType;       // 分片类型
+    const char* tableName;        // 固定表或分区父表
+    const char* tablePrefix;      // 日分片表前缀
+    const char* routeFieldName;   // epoch ms 路由字段名
+    int missingPolicy;            // HdbMissingShardPolicy
 };
 
+// 逻辑数据集定义
 struct HdbDatasetDef
 {
-    const char* datasetName;
-    int modelSize;
-    const HdbFieldDef* fields;
-    int fieldCount;
-    HdbShardDef shard;
+    const char* datasetName;     // DLL 调用方看到的名字
+    int modelSize;               // row struct 字节数
+    const HdbFieldDef* fields;   // 字段数组
+    int fieldCount;              // 字段数量
+    HdbShardDef shard;           // 物理表路由规则
 };
 // XXX 字段定义辅助宏只减少重复代码，数据库映射信息仍然显式记录
 #define HDB_FIELD_INT32(model, member, column) \

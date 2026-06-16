@@ -250,7 +250,7 @@ int CHdbQuerySqlBuilder::ResolveAndCollect(const CHdbQueryAst& ast,
             SetLastError("route field is not found");
             return HDB_ERR_SHARD_DEF;
         }
-        // 日分片查询的 root 子查询必须带 route 字段用于时间过滤
+        // 日分片查询的 root 子查询带上 route 字段用于时间过滤
         AddRootColumn(rootColumns, routeField->columnName);
     }
 

@@ -219,7 +219,7 @@ int HdbIpcEncodeResultRows(const HdbIpcResultSet& result, std::vector<unsigned c
     int ret;
 
     outData.clear();
-    // 行数据保留 NULL 标记，空字符串和数据库 NULL 不能混在一起
+    // 行数据保留 NULL 标记，空字符串和数据库 NULL 分开处理
     if (result.rows.size() > HDB_IPC_MAX_RESULT_ROWS)
     {
         return HDB_IPC_ERR_BODY_SIZE;

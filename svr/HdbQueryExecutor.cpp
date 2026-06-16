@@ -126,7 +126,7 @@ int CHdbQueryExecutor::Execute(const CHdbQueryAst& ast, CHdbQueryResult& result)
     {
         params.push_back(query.params[i].c_str());
     }
-    // param 指针引用 query.params 内部字符串，只在本次同步调用内有效
+    // param 指针引用 query 的 params 字符串，只在本次同步调用内有效
     ret = m_adapter->QueryParams(query.sql.c_str(),
         (int)params.size(),
         params.empty() ? NULL : &params[0],
