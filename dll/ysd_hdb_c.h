@@ -32,6 +32,8 @@ typedef struct HdbResultTag* HDB_RESULT;       // 查询结果句柄
 
 // 同一个 HDB_QUERY、HDB_SOURCE 或 HDB_RESULT 按单线程使用
 // DLL 内部 active source 表已加锁，避免不同 query 注册 source 时互相破坏
+// 注意，调用DLL不需要该头文件，仅供DLL导出和跨边界使用
+// 目前HdbSource不支持并发
 
 // 创建 DLL 侧 session 句柄，当前不会直接连接数据库
 HDB_API int HDB_CALL HdbOpen(const char* profileName, HDB_SESSION* outSession);
