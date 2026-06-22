@@ -155,7 +155,6 @@
     <ClCompile Include="..\test\HdbSvrSelfTest.cpp" />
     <ClCompile Include="HdbDatasetRegistry.cpp" />
     <ClCompile Include="HdbDbAdapter.cpp" />
-    <ClCompile Include="HdbFieldPathResolver.cpp" />
     <ClCompile Include="HdbIpcCommandHandler.cpp" />
     <ClCompile Include="HdbIpcServerContext.cpp" />
     <ClCompile Include="HdbModelCrud.cpp" />
@@ -176,7 +175,6 @@
     <ClInclude Include="HdbCommon.h" />
     <ClInclude Include="HdbDatasetRegistry.h" />
     <ClInclude Include="HdbDbAdapter.h" />
-    <ClInclude Include="HdbFieldPathResolver.h" />
     <ClInclude Include="HdbIpcCommandHandler.h" />
     <ClInclude Include="HdbIpcServerContext.h" />
     <ClInclude Include="HdbModelCrud.h" />

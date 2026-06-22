@@ -1,7 +1,7 @@
 ﻿#ifndef YSD_HDB_QUERY_SQL_BUILDER_H
 #define YSD_HDB_QUERY_SQL_BUILDER_H
 
-#include "HdbFieldPathResolver.h"
+#include "HdbDatasetRegistry.h"
 #include "HdbShardRouter.h"
 #include "../common/HdbQueryAst.h"
 
@@ -29,48 +29,65 @@ public:
     const char* GetLastError() const;
 
 private:
-    struct JoinInfo
+    struct ResolvedSource
     {
-        std::string path;                 // relation 链路径
-        const HdbRelationDef* relation;   // 当前 relation
-        const HdbDatasetDef* fromDataset; // 起始数据集
-        const HdbDatasetDef* toDataset;   // 目标数据集
-        std::string fromAlias;            // 起始表别名
-        std::string toAlias;              // 目标表别名
+        int sourceId;                         // AST sourceId
+        int parentSourceId;                   // JOIN 父 source
+        const HdbDatasetDef* dataset;         // 当前 source 对应的数据集
+        const HdbAssociationDef* association; // JOIN 使用的 Association，ROOT 为空
+        const HdbFieldDef* localField;        // 父 source 上参与 ON 的字段
+        const HdbFieldDef* targetField;       // 当前 source 上参与 ON 的字段
+        int joinType;                         // HdbJoinType
+        std::string sqlAlias;                 // s0/s1/s2
     };
 
-    int ResolveAndCollect(const CHdbQueryAst& ast,
-        const HdbDatasetDef& rootDataset,
-        std::vector<HdbResolvedFieldPath>& selectPaths,
-        std::vector<HdbResolvedFieldPath>& wherePaths,
-        std::vector<HdbResolvedFieldPath>& orderPaths,
-        std::vector<JoinInfo>& joins,
+    struct ResolvedField
+    {
+        int sourceId;                 // 字段所属 source
+        const HdbDatasetDef* dataset; // 字段所属数据集
+        const HdbFieldDef* field;     // 字段元数据
+        std::string sqlAlias;         // 字段 SQL 别名
+    };
+
+    int ResolveSources(const CHdbQueryAst& ast, std::vector<ResolvedSource>& sources);
+    int ResolveSelectFields(const CHdbQueryAst& ast,
+        const std::vector<ResolvedSource>& sources,
+        std::vector<ResolvedField>& fields);
+    int ResolveWhereFields(const CHdbQueryAst& ast,
+        const std::vector<ResolvedSource>& sources,
+        std::vector<ResolvedField>& fields);
+    int ResolveOrderFields(const CHdbQueryAst& ast,
+        const std::vector<ResolvedSource>& sources,
+        std::vector<ResolvedField>& fields);
+    int ResolveFieldRef(const std::vector<ResolvedSource>& sources,
+        const HdbQueryFieldRef& fieldRef,
+        ResolvedField& outField);
+    int CollectRootColumns(const CHdbQueryAst& ast,
+        const std::vector<ResolvedSource>& sources,
+        const std::vector<ResolvedField>& selectFields,
+        const std::vector<ResolvedField>& whereFields,
+        const std::vector<ResolvedField>& orderFields,
         std::vector<std::string>& rootColumns);
-    int AddRelationJoins(const HdbResolvedFieldPath& path, std::vector<JoinInfo>& joins);
     int AddRootColumn(std::vector<std::string>& rootColumns, const char* columnName);
-    int FindJoin(const std::vector<JoinInfo>& joins, const char* path) const;
+    const ResolvedSource* FindResolvedSource(const std::vector<ResolvedSource>& sources, int sourceId) const;
     int BuildRootSource(const CHdbQueryAst& ast,
-        const HdbDatasetDef& rootDataset,
+        const ResolvedSource& rootSource,
         const std::vector<std::string>& rootColumns,
-        const std::vector<HdbResolvedFieldPath>& wherePaths,
+        const std::vector<ResolvedField>& whereFields,
         HdbBuiltQuery& outQuery,
         std::string& outSource);
-    int BuildJoins(const std::vector<JoinInfo>& joins, std::string& outSql);
+    int BuildJoins(const std::vector<ResolvedSource>& sources, std::string& outSql);
     int BuildWhere(const CHdbQueryAst& ast,
-        const HdbDatasetDef& rootDataset,
-        const std::vector<HdbResolvedFieldPath>& wherePaths,
-        const std::vector<JoinInfo>& joins,
+        const ResolvedSource& rootSource,
+        const std::vector<ResolvedField>& whereFields,
         HdbBuiltQuery& outQuery,
         std::string& outSql);
     int BuildOrder(const CHdbQueryAst& ast,
-        const std::vector<HdbResolvedFieldPath>& orderPaths,
-        const std::vector<JoinInfo>& joins,
+        const std::vector<ResolvedField>& orderFields,
         std::string& outSql);
-    int AppendFieldExpr(const HdbResolvedFieldPath& path,
-        const std::vector<JoinInfo>& joins,
-        std::string& outExpr);
+    int AppendFieldExpr(const ResolvedField& field, std::string& outExpr);
     // where 参数值在这里按字段类型转成数据库文本
-    int FormatWhereParamValue(const HdbResolvedFieldPath& path,
+    int FormatWhereParamValue(const ResolvedField& field,
         const HdbQueryWhereItem& whereItem,
         std::string& outValue);
     int AddParam(HdbBuiltQuery& query, const std::string& value);
@@ -78,7 +95,9 @@ private:
     std::string FormatTimestampMs(HdbInt64 value) const;
     const char* OpToSql(int op) const;
     int ValidateOrderType(int orderType) const;
-    int ValidateRelationDataset(const HdbDatasetDef& dataset);
+    int ValidateJoinType(int joinType) const;
+    int ValidateJoinTargetDataset(const HdbDatasetDef& dataset);
+    std::string AliasForSource(int sourceId) const;
     void SetLastError(const char* text);
 
 private:

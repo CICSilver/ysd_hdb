@@ -21,8 +21,8 @@ enum HdbErrorCode
     HDB_ERR_DATASET_DEF = -8, // 逻辑数据集元数据定义非法
     HDB_ERR_DATASET_NOT_FOUND = -9, // 调用方传入的逻辑数据集不存在
     HDB_ERR_FIELD_NOT_FOUND = -10, // 字段名在指定数据集内不存在
-    HDB_ERR_FIELD_PATH = -11, // 字段路径格式非法或无法解析到字段
-    HDB_ERR_RELATION_NOT_FOUND = -12, // 字段路径中的 Relation 不存在
+    HDB_ERR_FIELD_REF = -11, // 字段引用格式非法或无法解析到字段
+    HDB_ERR_ASSOCIATION_NOT_FOUND = -12, // 显式 JOIN 使用的 Association 不存在
     HDB_ERR_QUERY_NEED_TIME_RANGE = -13, // 按时间分片的数据集查询缺少时间范围
     HDB_ERR_QUERY_RANGE = -14, // 查询时间范围、分页范围或排序条件非法
     HDB_ERR_SHARD_DEF = -15, // 分片元数据定义非法
@@ -48,6 +48,12 @@ enum HdbOrderType
 {
     HDB_ORDER_ASC = 1, // 升序
     HDB_ORDER_DESC = 2 // 降序
+};
+
+enum HdbJoinType
+{
+    HDB_JOIN_INNER = 1, // 内连接，右侧无匹配时整行不返回
+    HDB_JOIN_LEFT = 2 // 左连接，右侧无匹配时右侧字段返回 NULL
 };
 
 // DLL 和 result schema 共用字段类型

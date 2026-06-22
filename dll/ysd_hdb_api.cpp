@@ -34,7 +34,14 @@ struct HdbQueryTag
     // query 句柄只累积逻辑查询 AST，真正 SQL 由 SERVER 生成
     HDB_SESSION session;
     CHdbQueryAst ast;
+    std::vector<HDB_SOURCE> sources;
     std::string lastError;
+};
+
+struct HdbQuerySourceTag
+{
+    HDB_QUERY ownerQuery;
+    int sourceId;
 };
 
 struct HdbResultCell
@@ -54,6 +61,8 @@ struct HdbResultTag
     int currentRow;
     std::string lastError;
 };
+
+static std::vector<HDB_SOURCE> g_hdbActiveSources;
 
 static void HdbDllSetSessionError(HDB_SESSION session, const char* text)
 {
@@ -180,6 +189,129 @@ static int HdbDllFindColumn(HDB_RESULT result, const char* outputName)
         }
     }
     return -1;
+}
+
+static int HdbDllIsActiveSource(HDB_SOURCE source)
+{
+    int i;
+
+    if (source == NULL)
+    {
+        return 0;
+    }
+    for (i = 0; i < (int)g_hdbActiveSources.size(); ++i)
+    {
+        if (g_hdbActiveSources[i] == source)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void HdbDllUnregisterSource(HDB_SOURCE source)
+{
+    int i;
+
+    if (source == NULL)
+    {
+        return;
+    }
+    for (i = 0; i < (int)g_hdbActiveSources.size(); ++i)
+    {
+        if (g_hdbActiveSources[i] == source)
+        {
+            g_hdbActiveSources.erase(g_hdbActiveSources.begin() + i);
+            return;
+        }
+    }
+}
+
+static int HdbDllCreateQuerySource(HDB_QUERY query, int sourceId, HDB_SOURCE* outSource)
+{
+    HDB_SOURCE source;
+
+    if (query == NULL || outSource == NULL || sourceId < 0)
+    {
+        return HDB_ERR_PARAM;
+    }
+    *outSource = NULL;
+    source = new(std::nothrow) HdbQuerySourceTag();
+    if (source == NULL)
+    {
+        HdbDllSetQueryError(query, "allocate query source failed");
+        return HDB_ERR_BUFFER;
+    }
+    try
+    {
+        source->ownerQuery = query;
+        source->sourceId = sourceId;
+        g_hdbActiveSources.push_back(source);
+        query->sources.push_back(source);
+    }
+    catch (...)
+    {
+        HdbDllUnregisterSource(source);
+        delete source;
+        HdbDllSetQueryError(query, "allocate query source failed");
+        return HDB_ERR_BUFFER;
+    }
+    *outSource = source;
+    return HDB_OK;
+}
+
+static int HdbDllValidateQuerySource(HDB_QUERY query, HDB_SOURCE source, int* outSourceId)
+{
+    if (outSourceId != NULL)
+    {
+        *outSourceId = -1;
+    }
+    if (query == NULL || source == NULL)
+    {
+        return HDB_ERR_PARAM;
+    }
+    if (!HdbDllIsActiveSource(source))
+    {
+        HdbDllSetQueryError(query, "query source is not active");
+        return HDB_ERR_PARAM;
+    }
+    if (source->ownerQuery != query)
+    {
+        HdbDllSetQueryError(query, "query source belongs to another query");
+        return HDB_ERR_PARAM;
+    }
+    if (query->ast.FindSourceIndex(source->sourceId) < 0)
+    {
+        HdbDllSetQueryError(query, "query source id is invalid");
+        return HDB_ERR_PARAM;
+    }
+    if (outSourceId != NULL)
+    {
+        *outSourceId = source->sourceId;
+    }
+    return HDB_OK;
+}
+
+static void HdbDllFreeQuerySources(HDB_QUERY query)
+{
+    int i;
+
+    if (query == NULL)
+    {
+        return;
+    }
+    for (i = 0; i < (int)query->sources.size(); ++i)
+    {
+        HDB_SOURCE source = query->sources[i];
+        HdbDllUnregisterSource(source);
+        if (source != NULL)
+        {
+            source->ownerQuery = NULL;
+            source->sourceId = -1;
+            delete source;
+        }
+    }
+    query->sources.clear();
 }
 
 static int HdbDllGetCurrentCell(HDB_RESULT result,
@@ -617,11 +749,11 @@ static int HdbBatchInsertRowsImpl(HDB_SESSION session,
     return HDB_ERR_NOT_IMPLEMENTED;
 }
 
-static int HdbQueryCreateImpl(HDB_SESSION session, const char* datasetName, HDB_QUERY* outQuery)
+static int HdbQueryCreateImpl(HDB_SESSION session, HDB_QUERY* outQuery)
 {
     HDB_QUERY query;
 
-    if (session == NULL || datasetName == NULL || datasetName[0] == '\0' || outQuery == NULL)
+    if (session == NULL || outQuery == NULL)
     {
         return HDB_ERR_PARAM;
     }
@@ -635,12 +767,6 @@ static int HdbQueryCreateImpl(HDB_SESSION session, const char* datasetName, HDB_
     try
     {
         query->session = session;
-        if (query->ast.SetRootDataset(datasetName) != 0)
-        {
-            HdbDllSetSessionError(session, "invalid dataset name");
-            delete query;
-            return HDB_ERR_PARAM;
-        }
     }
     catch (...)
     {
@@ -655,9 +781,79 @@ static int HdbQueryFreeImpl(HDB_QUERY query)
 {
     if (query != NULL)
     {
+        HdbDllFreeQuerySources(query);
         delete query;
     }
     return HDB_OK;
+}
+
+static int HdbQueryFromImpl(HDB_QUERY query, const char* datasetName, HDB_SOURCE* outRootSource)
+{
+    int sourceId;
+    int ret;
+
+    if (outRootSource != NULL)
+    {
+        *outRootSource = NULL;
+    }
+    if (query == NULL || datasetName == NULL || datasetName[0] == '\0' || outRootSource == NULL)
+    {
+        return HDB_ERR_PARAM;
+    }
+    if (query->ast.HasRootSource())
+    {
+        HdbDllSetQueryError(query, "query root source already exists");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    sourceId = -1;
+    if (query->ast.AddRootSource(datasetName, &sourceId) != 0)
+    {
+        HdbDllSetQueryError(query, "invalid root dataset name");
+        return HDB_ERR_PARAM;
+    }
+    ret = HdbDllCreateQuerySource(query, sourceId, outRootSource);
+    if (ret != HDB_OK)
+    {
+        query->ast.Clear();
+    }
+    return ret;
+}
+
+static int HdbQueryJoinImpl(HDB_QUERY query,
+    HDB_SOURCE fromSource,
+    const char* associationName,
+    int joinType,
+    HDB_SOURCE* outTargetSource)
+{
+    int parentSourceId;
+    int targetSourceId;
+    int ret;
+
+    if (outTargetSource != NULL)
+    {
+        *outTargetSource = NULL;
+    }
+    if (query == NULL || fromSource == NULL || associationName == NULL || associationName[0] == '\0' ||
+        outTargetSource == NULL)
+    {
+        return HDB_ERR_PARAM;
+    }
+    ret = HdbDllValidateQuerySource(query, fromSource, &parentSourceId);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (query->ast.AddJoinSource(parentSourceId, associationName, joinType, &targetSourceId) != 0)
+    {
+        HdbDllSetQueryError(query, "invalid query join source");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    ret = HdbDllCreateQuerySource(query, targetSourceId, outTargetSource);
+    if (ret != HDB_OK && !query->ast.sources.empty())
+    {
+        query->ast.sources.pop_back();
+    }
+    return ret;
 }
 
 static int HdbQueryTimeRangeImpl(HDB_QUERY query, HdbInt64 beginMs, HdbInt64 endMs)
@@ -674,27 +870,43 @@ static int HdbQueryTimeRangeImpl(HDB_QUERY query, HdbInt64 beginMs, HdbInt64 end
     return HDB_OK;
 }
 
-static int HdbQuerySelectPathImpl(HDB_QUERY query, const char* fieldPath, const char* outputName)
+static int HdbQuerySelectImpl(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, const char* outputName)
 {
+    int sourceId;
+    int ret;
+
     if (query == NULL)
     {
         return HDB_ERR_PARAM;
     }
-    if (query->ast.AddSelect(fieldPath, outputName) != 0)
+    ret = HdbDllValidateQuerySource(query, source, &sourceId);
+    if (ret != HDB_OK)
     {
-        HdbDllSetQueryError(query, "invalid select path");
+        return ret;
+    }
+    if (query->ast.AddSelect(sourceId, fieldName, outputName) != 0)
+    {
+        HdbDllSetQueryError(query, "invalid select field");
         return HDB_ERR_PARAM;
     }
     return HDB_OK;
 }
 
-static int HdbQueryWhereInt32Impl(HDB_QUERY query, const char* fieldPath, int op, int value)
+static int HdbQueryWhereInt32Impl(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, int op, int value)
 {
+    int sourceId;
+    int ret;
+
     if (query == NULL)
     {
         return HDB_ERR_PARAM;
     }
-    if (query->ast.AddWhereInt32(fieldPath, op, value) != 0)
+    ret = HdbDllValidateQuerySource(query, source, &sourceId);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (query->ast.AddWhereInt32(sourceId, fieldName, op, value) != 0)
     {
         HdbDllSetQueryError(query, "invalid int32 where condition");
         return HDB_ERR_PARAM;
@@ -702,13 +914,21 @@ static int HdbQueryWhereInt32Impl(HDB_QUERY query, const char* fieldPath, int op
     return HDB_OK;
 }
 
-static int HdbQueryWhereInt64Impl(HDB_QUERY query, const char* fieldPath, int op, HdbInt64 value)
+static int HdbQueryWhereInt64Impl(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, int op, HdbInt64 value)
 {
+    int sourceId;
+    int ret;
+
     if (query == NULL)
     {
         return HDB_ERR_PARAM;
     }
-    if (query->ast.AddWhereInt64(fieldPath, op, (HdbQueryInt64)value) != 0)
+    ret = HdbDllValidateQuerySource(query, source, &sourceId);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (query->ast.AddWhereInt64(sourceId, fieldName, op, (HdbQueryInt64)value) != 0)
     {
         HdbDllSetQueryError(query, "invalid int64 where condition");
         return HDB_ERR_PARAM;
@@ -716,13 +936,21 @@ static int HdbQueryWhereInt64Impl(HDB_QUERY query, const char* fieldPath, int op
     return HDB_OK;
 }
 
-static int HdbQueryWhereDoubleImpl(HDB_QUERY query, const char* fieldPath, int op, double value)
+static int HdbQueryWhereDoubleImpl(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, int op, double value)
 {
+    int sourceId;
+    int ret;
+
     if (query == NULL)
     {
         return HDB_ERR_PARAM;
     }
-    if (query->ast.AddWhereDouble(fieldPath, op, value) != 0)
+    ret = HdbDllValidateQuerySource(query, source, &sourceId);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (query->ast.AddWhereDouble(sourceId, fieldName, op, value) != 0)
     {
         HdbDllSetQueryError(query, "invalid double where condition");
         return HDB_ERR_PARAM;
@@ -730,13 +958,21 @@ static int HdbQueryWhereDoubleImpl(HDB_QUERY query, const char* fieldPath, int o
     return HDB_OK;
 }
 
-static int HdbQueryWhereStringEqImpl(HDB_QUERY query, const char* fieldPath, const char* value)
+static int HdbQueryWhereStringEqImpl(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, const char* value)
 {
+    int sourceId;
+    int ret;
+
     if (query == NULL)
     {
         return HDB_ERR_PARAM;
     }
-    if (query->ast.AddWhereString(fieldPath, HDB_OP_EQ, value) != 0)
+    ret = HdbDllValidateQuerySource(query, source, &sourceId);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (query->ast.AddWhereString(sourceId, fieldName, HDB_OP_EQ, value) != 0)
     {
         HdbDllSetQueryError(query, "invalid string equal condition");
         return HDB_ERR_PARAM;
@@ -744,13 +980,21 @@ static int HdbQueryWhereStringEqImpl(HDB_QUERY query, const char* fieldPath, con
     return HDB_OK;
 }
 
-static int HdbQueryWhereStringLikeImpl(HDB_QUERY query, const char* fieldPath, const char* pattern)
+static int HdbQueryWhereStringLikeImpl(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, const char* pattern)
 {
+    int sourceId;
+    int ret;
+
     if (query == NULL)
     {
         return HDB_ERR_PARAM;
     }
-    if (query->ast.AddWhereString(fieldPath, HDB_OP_LIKE, pattern) != 0)
+    ret = HdbDllValidateQuerySource(query, source, &sourceId);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (query->ast.AddWhereString(sourceId, fieldName, HDB_OP_LIKE, pattern) != 0)
     {
         HdbDllSetQueryError(query, "invalid string like condition");
         return HDB_ERR_PARAM;
@@ -758,8 +1002,11 @@ static int HdbQueryWhereStringLikeImpl(HDB_QUERY query, const char* fieldPath, c
     return HDB_OK;
 }
 
-static int HdbQueryOrderByImpl(HDB_QUERY query, const char* fieldPath, int orderType)
+static int HdbQueryOrderByImpl(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, int orderType)
 {
+    int sourceId;
+    int ret;
+
     if (query == NULL)
     {
         return HDB_ERR_PARAM;
@@ -769,9 +1016,14 @@ static int HdbQueryOrderByImpl(HDB_QUERY query, const char* fieldPath, int order
         HdbDllSetQueryError(query, "invalid order type");
         return HDB_ERR_QUERY_RANGE;
     }
-    if (query->ast.AddOrder(fieldPath, orderType) != 0)
+    ret = HdbDllValidateQuerySource(query, source, &sourceId);
+    if (ret != HDB_OK)
     {
-        HdbDllSetQueryError(query, "invalid order path");
+        return ret;
+    }
+    if (query->ast.AddOrder(sourceId, fieldName, orderType) != 0)
+    {
+        HdbDllSetQueryError(query, "invalid order field");
         return HDB_ERR_PARAM;
     }
     return HDB_OK;
@@ -1256,7 +1508,7 @@ int HDB_CALL HdbBatchInsertRows(HDB_SESSION session,
     }
 }
 
-int HDB_CALL HdbQueryCreate(HDB_SESSION session, const char* datasetName, HDB_QUERY* outQuery)
+int HDB_CALL HdbQueryCreate(HDB_SESSION session, HDB_QUERY* outQuery)
 {
     if (outQuery != NULL)
     {
@@ -1264,7 +1516,7 @@ int HDB_CALL HdbQueryCreate(HDB_SESSION session, const char* datasetName, HDB_QU
     }
     try
     {
-        return HdbQueryCreateImpl(session, datasetName, outQuery);
+        return HdbQueryCreateImpl(session, outQuery);
     }
     catch (const std::bad_alloc&)
     {
@@ -1300,6 +1552,66 @@ int HDB_CALL HdbQueryFree(HDB_QUERY query)
     }
 }
 
+int HDB_CALL HdbQueryFrom(HDB_QUERY query, const char* datasetName, HDB_SOURCE* outRootSource)
+{
+    if (outRootSource != NULL)
+    {
+        *outRootSource = NULL;
+    }
+    try
+    {
+        return HdbQueryFromImpl(query, datasetName, outRootSource);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (outRootSource != NULL)
+        {
+            *outRootSource = NULL;
+        }
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        if (outRootSource != NULL)
+        {
+            *outRootSource = NULL;
+        }
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbQueryJoin(HDB_QUERY query,
+    HDB_SOURCE fromSource,
+    const char* associationName,
+    int joinType,
+    HDB_SOURCE* outTargetSource)
+{
+    if (outTargetSource != NULL)
+    {
+        *outTargetSource = NULL;
+    }
+    try
+    {
+        return HdbQueryJoinImpl(query, fromSource, associationName, joinType, outTargetSource);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (outTargetSource != NULL)
+        {
+            *outTargetSource = NULL;
+        }
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        if (outTargetSource != NULL)
+        {
+            *outTargetSource = NULL;
+        }
+        return HdbDllReturnQueryException(query);
+    }
+}
+
 int HDB_CALL HdbQueryTimeRange(HDB_QUERY query, HdbInt64 beginMs, HdbInt64 endMs)
 {
     try
@@ -1316,11 +1628,11 @@ int HDB_CALL HdbQueryTimeRange(HDB_QUERY query, HdbInt64 beginMs, HdbInt64 endMs
     }
 }
 
-int HDB_CALL HdbQuerySelectPath(HDB_QUERY query, const char* fieldPath, const char* outputName)
+int HDB_CALL HdbQuerySelect(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, const char* outputName)
 {
     try
     {
-        return HdbQuerySelectPathImpl(query, fieldPath, outputName);
+        return HdbQuerySelectImpl(query, source, fieldName, outputName);
     }
     catch (const std::bad_alloc&)
     {
@@ -1332,11 +1644,11 @@ int HDB_CALL HdbQuerySelectPath(HDB_QUERY query, const char* fieldPath, const ch
     }
 }
 
-int HDB_CALL HdbQueryWhereInt32(HDB_QUERY query, const char* fieldPath, int op, int value)
+int HDB_CALL HdbQueryWhereInt32(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, int op, int value)
 {
     try
     {
-        return HdbQueryWhereInt32Impl(query, fieldPath, op, value);
+        return HdbQueryWhereInt32Impl(query, source, fieldName, op, value);
     }
     catch (const std::bad_alloc&)
     {
@@ -1348,11 +1660,11 @@ int HDB_CALL HdbQueryWhereInt32(HDB_QUERY query, const char* fieldPath, int op, 
     }
 }
 
-int HDB_CALL HdbQueryWhereInt64(HDB_QUERY query, const char* fieldPath, int op, HdbInt64 value)
+int HDB_CALL HdbQueryWhereInt64(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, int op, HdbInt64 value)
 {
     try
     {
-        return HdbQueryWhereInt64Impl(query, fieldPath, op, value);
+        return HdbQueryWhereInt64Impl(query, source, fieldName, op, value);
     }
     catch (const std::bad_alloc&)
     {
@@ -1364,11 +1676,11 @@ int HDB_CALL HdbQueryWhereInt64(HDB_QUERY query, const char* fieldPath, int op, 
     }
 }
 
-int HDB_CALL HdbQueryWhereDouble(HDB_QUERY query, const char* fieldPath, int op, double value)
+int HDB_CALL HdbQueryWhereDouble(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, int op, double value)
 {
     try
     {
-        return HdbQueryWhereDoubleImpl(query, fieldPath, op, value);
+        return HdbQueryWhereDoubleImpl(query, source, fieldName, op, value);
     }
     catch (const std::bad_alloc&)
     {
@@ -1380,11 +1692,11 @@ int HDB_CALL HdbQueryWhereDouble(HDB_QUERY query, const char* fieldPath, int op,
     }
 }
 
-int HDB_CALL HdbQueryWhereStringEq(HDB_QUERY query, const char* fieldPath, const char* value)
+int HDB_CALL HdbQueryWhereStringEq(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, const char* value)
 {
     try
     {
-        return HdbQueryWhereStringEqImpl(query, fieldPath, value);
+        return HdbQueryWhereStringEqImpl(query, source, fieldName, value);
     }
     catch (const std::bad_alloc&)
     {
@@ -1396,11 +1708,11 @@ int HDB_CALL HdbQueryWhereStringEq(HDB_QUERY query, const char* fieldPath, const
     }
 }
 
-int HDB_CALL HdbQueryWhereStringLike(HDB_QUERY query, const char* fieldPath, const char* pattern)
+int HDB_CALL HdbQueryWhereStringLike(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, const char* pattern)
 {
     try
     {
-        return HdbQueryWhereStringLikeImpl(query, fieldPath, pattern);
+        return HdbQueryWhereStringLikeImpl(query, source, fieldName, pattern);
     }
     catch (const std::bad_alloc&)
     {
@@ -1412,11 +1724,11 @@ int HDB_CALL HdbQueryWhereStringLike(HDB_QUERY query, const char* fieldPath, con
     }
 }
 
-int HDB_CALL HdbQueryOrderBy(HDB_QUERY query, const char* fieldPath, int orderType)
+int HDB_CALL HdbQueryOrderBy(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, int orderType)
 {
     try
     {
-        return HdbQueryOrderByImpl(query, fieldPath, orderType);
+        return HdbQueryOrderByImpl(query, source, fieldName, orderType);
     }
     catch (const std::bad_alloc&)
     {

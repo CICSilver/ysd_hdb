@@ -75,11 +75,11 @@ static HdbDatasetDef g_hdbDatasets[] =
 };
 
 // 手写schema
-static HdbRelationDef g_hdbRelations[] =
+static HdbAssociationDef g_hdbAssociations[] =
 {
-    // relation 名称用于字段路径解析，例如 alarm 到 point 到 device 到 name
-    { "alarm", "point", "point", "point_id", "id", HDB_JOIN_LEFT },
-    { "point", "device", "device", "device_id", "id", HDB_JOIN_LEFT }
+    // Association 是显式 JOIN 的命名关联，不触发隐式导航
+    { "alarm", "point", "point", "point_id", "id" },
+    { "point", "device", "device", "device_id", "id" }
 };
 
 CHdbDatasetRegistry::CHdbDatasetRegistry()
@@ -122,20 +122,20 @@ const HdbFieldDef* CHdbDatasetRegistry::FindField(const HdbDatasetDef& dataset, 
     return NULL;
 }
 
-const HdbRelationDef* CHdbDatasetRegistry::FindRelation(const char* fromDataset, const char* relationName) const
+const HdbAssociationDef* CHdbDatasetRegistry::FindAssociation(const char* ownerDataset, const char* associationName) const
 {
     int i;
 
-    if (fromDataset == NULL || relationName == NULL)
+    if (ownerDataset == NULL || associationName == NULL)
     {
         return NULL;
     }
-    for (i = 0; i < (int)HDB_ARRAY_COUNT(g_hdbRelations); ++i)
+    for (i = 0; i < (int)HDB_ARRAY_COUNT(g_hdbAssociations); ++i)
     {
-        if (strcmp(g_hdbRelations[i].fromDataset, fromDataset) == 0 &&
-            strcmp(g_hdbRelations[i].relationName, relationName) == 0)
+        if (strcmp(g_hdbAssociations[i].ownerDataset, ownerDataset) == 0 &&
+            strcmp(g_hdbAssociations[i].associationName, associationName) == 0)
         {
-            return &g_hdbRelations[i];
+            return &g_hdbAssociations[i];
         }
     }
     return NULL;
@@ -188,37 +188,32 @@ int CHdbDatasetRegistry::ValidateDataset(const HdbDatasetDef& dataset) const
     return HDB_OK;
 }
 
-int CHdbDatasetRegistry::ValidateRelation(const HdbRelationDef& relation) const
+int CHdbDatasetRegistry::ValidateAssociation(const HdbAssociationDef& association) const
 {
-    const HdbDatasetDef* fromDataset;
-    const HdbDatasetDef* toDataset;
+    const HdbDatasetDef* ownerDataset;
+    const HdbDatasetDef* targetDataset;
 
-    if (ValidateIdentifier(relation.fromDataset) != HDB_OK ||
-        ValidateIdentifier(relation.relationName) != HDB_OK ||
-        ValidateIdentifier(relation.toDataset) != HDB_OK ||
-        ValidateIdentifier(relation.fromFieldName) != HDB_OK ||
-        ValidateIdentifier(relation.toFieldName) != HDB_OK)
+    if (ValidateIdentifier(association.ownerDataset) != HDB_OK ||
+        ValidateIdentifier(association.associationName) != HDB_OK ||
+        ValidateIdentifier(association.targetDataset) != HDB_OK ||
+        ValidateIdentifier(association.localFieldName) != HDB_OK ||
+        ValidateIdentifier(association.targetFieldName) != HDB_OK)
     {
-        return HDB_ERR_RELATION_NOT_FOUND;
+        return HDB_ERR_ASSOCIATION_NOT_FOUND;
     }
 
-    fromDataset = FindDataset(relation.fromDataset);
-    toDataset = FindDataset(relation.toDataset);
-    if (fromDataset == NULL || toDataset == NULL)
+    ownerDataset = FindDataset(association.ownerDataset);
+    targetDataset = FindDataset(association.targetDataset);
+    if (ownerDataset == NULL || targetDataset == NULL)
     {
-        SetLastError("relation dataset is missing");
-        return HDB_ERR_RELATION_NOT_FOUND;
+        SetLastError("association dataset is missing");
+        return HDB_ERR_ASSOCIATION_NOT_FOUND;
     }
-    if (FindField(*fromDataset, relation.fromFieldName) == NULL ||
-        FindField(*toDataset, relation.toFieldName) == NULL)
+    if (FindField(*ownerDataset, association.localFieldName) == NULL ||
+        FindField(*targetDataset, association.targetFieldName) == NULL)
     {
-        SetLastError("relation field is missing");
-        return HDB_ERR_RELATION_NOT_FOUND;
-    }
-    if (relation.joinType != HDB_JOIN_INNER && relation.joinType != HDB_JOIN_LEFT)
-    {
-        SetLastError("relation join type is invalid");
-        return HDB_ERR_RELATION_NOT_FOUND;
+        SetLastError("association field is missing");
+        return HDB_ERR_ASSOCIATION_NOT_FOUND;
     }
     return HDB_OK;
 }

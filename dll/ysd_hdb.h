@@ -19,9 +19,10 @@
 #endif
 #endif
 
-typedef struct HdbSessionTag* HDB_SESSION; // DLL 到 SERVER 的 IPC 会话
-typedef struct HdbQueryTag* HDB_QUERY;     // 逻辑查询句柄
-typedef struct HdbResultTag* HDB_RESULT;   // 查询结果句柄
+typedef struct HdbSessionTag* HDB_SESSION;     // DLL 到 SERVER 的 IPC 会话
+typedef struct HdbQueryTag* HDB_QUERY;         // 逻辑查询句柄
+typedef struct HdbQuerySourceTag* HDB_SOURCE;  // query 内显式 source 句柄
+typedef struct HdbResultTag* HDB_RESULT;       // 查询结果句柄
 
 // XXX 同一个 HDB_QUERY 或 HDB_RESULT 按单线程使用
 
@@ -56,24 +57,32 @@ HDB_API int HDB_CALL HdbBatchInsertRows(HDB_SESSION session,
     int rowSize,
     int rowCount);
 
-// 创建逻辑查询句柄，datasetName 取注册表里的逻辑数据集名
-HDB_API int HDB_CALL HdbQueryCreate(HDB_SESSION session,
-    const char* datasetName,
-    HDB_QUERY* outQuery);
-// 释放未执行或已执行的查询句柄，不会释放 HDB_RESULT
+// 创建逻辑查询句柄，ROOT 数据集必须通过 HdbQueryFrom 显式设置
+HDB_API int HDB_CALL HdbQueryCreate(HDB_SESSION session, HDB_QUERY* outQuery);
+// 释放未执行或已执行的查询句柄，同时释放 query 创建的所有 HDB_SOURCE
 HDB_API int HDB_CALL HdbQueryFree(HDB_QUERY query);
+// 设置查询 ROOT source，一个 query 中只允许成功调用一次
+HDB_API int HDB_CALL HdbQueryFrom(HDB_QUERY query,
+    const char* datasetName,
+    HDB_SOURCE* outRootSource);
+// 通过 parent source 的 Association 显式创建 JOIN source，joinType 取 HdbJoinType
+HDB_API int HDB_CALL HdbQueryJoin(HDB_QUERY query,
+    HDB_SOURCE fromSource,
+    const char* associationName,
+    int joinType,
+    HDB_SOURCE* outTargetSource);
 // 查询时间范围使用 epoch milliseconds，SERVER 侧按左闭右开范围拼条件
 HDB_API int HDB_CALL HdbQueryTimeRange(HDB_QUERY query, HdbInt64 beginMs, HdbInt64 endMs);
-// fieldPath 是逻辑字段路径，不是 SQL 片段，outputName 是结果取值用的列名
-HDB_API int HDB_CALL HdbQuerySelectPath(HDB_QUERY query, const char* fieldPath, const char* outputName);
-// where 条件只描述逻辑字段、比较符和值，SERVER 侧还会校验字段类型
-HDB_API int HDB_CALL HdbQueryWhereInt32(HDB_QUERY query, const char* fieldPath, int op, int value);
-HDB_API int HDB_CALL HdbQueryWhereInt64(HDB_QUERY query, const char* fieldPath, int op, HdbInt64 value);
-HDB_API int HDB_CALL HdbQueryWhereDouble(HDB_QUERY query, const char* fieldPath, int op, double value);
-HDB_API int HDB_CALL HdbQueryWhereStringEq(HDB_QUERY query, const char* fieldPath, const char* value);
-HDB_API int HDB_CALL HdbQueryWhereStringLike(HDB_QUERY query, const char* fieldPath, const char* pattern);
-// 排序字段同样走 fieldPath，不接收 SQL order 片段
-HDB_API int HDB_CALL HdbQueryOrderBy(HDB_QUERY query, const char* fieldPath, int orderType);
+// select 字段必须属于传入 source，不接受点号路径
+HDB_API int HDB_CALL HdbQuerySelect(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, const char* outputName);
+// where 条件只描述 source 字段、比较符和值，SERVER 侧还会校验字段类型
+HDB_API int HDB_CALL HdbQueryWhereInt32(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, int op, int value);
+HDB_API int HDB_CALL HdbQueryWhereInt64(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, int op, HdbInt64 value);
+HDB_API int HDB_CALL HdbQueryWhereDouble(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, int op, double value);
+HDB_API int HDB_CALL HdbQueryWhereStringEq(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, const char* value);
+HDB_API int HDB_CALL HdbQueryWhereStringLike(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, const char* pattern);
+// 排序字段同样必须属于传入 source，不接收 SQL order 片段
+HDB_API int HDB_CALL HdbQueryOrderBy(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, int orderType);
 // limit 为 0 时使用 SERVER 默认上限，offset 保持非负
 HDB_API int HDB_CALL HdbQueryLimit(HDB_QUERY query, int limit, int offset);
 // 执行成功后 outResult 交给调用方，后续用 HdbResultFree 释放

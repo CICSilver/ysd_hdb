@@ -5,21 +5,14 @@
 
 #include <string>
 
-enum HdbJoinType
+// Association 是可供显式 JOIN 使用的命名关联，不暗中决定 JOIN 类型
+struct HdbAssociationDef
 {
-    HDB_JOIN_INNER = 1, // 内连接，右侧无匹配时整行不返回
-    HDB_JOIN_LEFT = 2 // 左连接，右侧无匹配时右侧字段返回 NULL
-};
-
-// relation 描述数据集之间的跳转
-struct HdbRelationDef
-{
-    const char* fromDataset;   // 起始数据集
-    const char* relationName;  // fieldPath 中的一段
-    const char* toDataset;     // 目标数据集
-    const char* fromFieldName; // 起始字段
-    const char* toFieldName;   // 目标字段
-    int joinType;              // HdbJoinType
+    const char* ownerDataset;     // 拥有关联的起始数据集
+    const char* associationName;  // 查询中显式使用的 Association 名称
+    const char* targetDataset;    // 目标数据集
+    const char* localFieldName;   // ownerDataset 上参与 ON 的字段
+    const char* targetFieldName;  // targetDataset 上参与 ON 的字段
 };
 
 class CHdbDatasetRegistry
@@ -30,11 +23,11 @@ public:
     // 返回静态元数据指针
     const HdbDatasetDef* FindDataset(const char* datasetName) const;
     const HdbFieldDef* FindField(const HdbDatasetDef& dataset, const char* fieldName) const;
-    const HdbRelationDef* FindRelation(const char* fromDataset, const char* relationName) const;
+    const HdbAssociationDef* FindAssociation(const char* ownerDataset, const char* associationName) const;
 
     // 进入 SQL builder 的名字都走这里校验
     int ValidateDataset(const HdbDatasetDef& dataset) const;
-    int ValidateRelation(const HdbRelationDef& relation) const;
+    int ValidateAssociation(const HdbAssociationDef& association) const;
     int ValidateIdentifier(const char* name) const;
     const char* GetLastError() const;
 

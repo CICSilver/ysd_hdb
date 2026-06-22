@@ -4,8 +4,9 @@
 #include "HdbQueryAst.h"
 
 #include <string>
+#include <vector>
 
-#define HDB_QUERY_AST_VERSION 1 // AST 文本版本
+#define HDB_QUERY_AST_VERSION 2 // AST 文本版本
 #define HDB_QUERY_AST_MAX_BYTES (1024u * 1024u) // AST 文本字节上限
 #define HDB_QUERY_MAX_SELECT_COUNT 128 // select 最大项数
 #define HDB_QUERY_MAX_WHERE_COUNT 128 // where 最大项数
@@ -22,16 +23,18 @@ public:
     const char* GetLastError() const;
 
 private:
-    // Decode 入口共用的文本校验
     int ValidateText(const std::string& text, const char* name);
+    int ValidateNameText(const std::string& text, const char* name);
     int ValidateCompareOp(int op);
     int ValidateValueType(int valueType);
     int ValidateOrderType(int orderType);
+    int ValidateJoinType(int joinType);
     int ParseInt32Strict(const std::string& text, int* value);
     int ParseInt64Strict(const std::string& text, HdbQueryInt64* value);
     int ParseDoubleStrict(const std::string& text, double* value);
     int ParsePairInt64(const std::string& text, HdbQueryInt64* first, HdbQueryInt64* second);
     int ParsePairInt32(const std::string& text, int* first, int* second);
+    int SplitFields(const std::string& text, std::vector<std::string>& fields);
     void SetLastError(const char* text);
 
 private:

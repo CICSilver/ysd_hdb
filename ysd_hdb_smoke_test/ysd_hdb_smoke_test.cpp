@@ -363,16 +363,40 @@ static int RunPingSmoke(HDB_SESSION session)
 static int RunHistoryQuerySmoke(HDB_SESSION session)
 {
     HDB_QUERY query;
+    HDB_SOURCE alarmSource;
+    HDB_SOURCE pointSource;
+    HDB_SOURCE deviceSource;
     HDB_RESULT result;
     int ret;
 
     PrintTestTitle("历史查询", "覆盖日分片查询、两级关联、NULL 和类型读取");
     query = NULL;
+    alarmSource = NULL;
+    pointSource = NULL;
+    deviceSource = NULL;
     result = NULL;
-    // 创建alarm日表查询
-    ret = HdbQueryCreate(session, "alarm", &query);
+    // 创建查询并显式声明 ROOT 和 JOIN source
+    ret = HdbQueryCreate(session, &query);
     if (ExpectHdbOk(session, ret, "create alarm query") != 0)
     {
+        return 1;
+    }
+    ret = HdbQueryFrom(query, "alarm", &alarmSource);
+    if (ExpectHdbOk(session, ret, "from alarm") != 0)
+    {
+        HdbQueryFree(query);
+        return 1;
+    }
+    ret = HdbQueryJoin(query, alarmSource, "point", HDB_JOIN_LEFT, &pointSource);
+    if (ExpectHdbOk(session, ret, "join alarm point") != 0)
+    {
+        HdbQueryFree(query);
+        return 1;
+    }
+    ret = HdbQueryJoin(query, pointSource, "device", HDB_JOIN_LEFT, &deviceSource);
+    if (ExpectHdbOk(session, ret, "join point device") != 0)
+    {
+        HdbQueryFree(query);
         return 1;
     }
     // 查询时间范围，选定分表
@@ -382,13 +406,13 @@ static int RunHistoryQuerySmoke(HDB_SESSION session)
         HdbQueryFree(query);
         return 1;
     }
-    HdbQuerySelectPath(query, "id", "id");
-    HdbQuerySelectPath(query, "level", "level");
-    HdbQuerySelectPath(query, "occur_time", "time");
-    HdbQuerySelectPath(query, "point.name", "pointName");
-    HdbQuerySelectPath(query, "point.device.name", "deviceName");
-    HdbQueryWhereInt32(query, "level", HDB_OP_GE, 2);
-    HdbQueryOrderBy(query, "occur_time", HDB_ORDER_DESC);
+    HdbQuerySelect(query, alarmSource, "id", "id");
+    HdbQuerySelect(query, alarmSource, "level", "level");
+    HdbQuerySelect(query, alarmSource, "occur_time", "time");
+    HdbQuerySelect(query, pointSource, "name", "pointName");
+    HdbQuerySelect(query, deviceSource, "name", "deviceName");
+    HdbQueryWhereInt32(query, alarmSource, "level", HDB_OP_GE, 2);
+    HdbQueryOrderBy(query, alarmSource, "occur_time", HDB_ORDER_DESC);
     HdbQueryLimit(query, 10, 0);
     ret = HdbQueryExecute(query, &result);
     if (ExpectHdbOk(session, ret, "execute history query") != 0)
@@ -422,22 +446,30 @@ static int RunHistoryQuerySmoke(HDB_SESSION session)
 static int RunTimestampWhereSmoke(HDB_SESSION session)
 {
     HDB_QUERY query;
+    HDB_SOURCE alarmSource;
     HDB_RESULT result;
     int ret;
 
     PrintTestTitle("时间条件", "覆盖时间字段 where 条件和分片过滤");
     query = NULL;
+    alarmSource = NULL;
     result = NULL;
-    ret = HdbQueryCreate(session, "alarm", &query);
+    ret = HdbQueryCreate(session, &query);
     if (ExpectHdbOk(session, ret, "create timestamp query") != 0)
     {
         return 1;
     }
+    ret = HdbQueryFrom(query, "alarm", &alarmSource);
+    if (ExpectHdbOk(session, ret, "from timestamp alarm") != 0)
+    {
+        HdbQueryFree(query);
+        return 1;
+    }
     HdbQueryTimeRange(query, MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 14, 0, 0, 0, 0));
-    HdbQuerySelectPath(query, "id", "id");
-    HdbQuerySelectPath(query, "occur_time", "time");
-    HdbQueryWhereInt64(query, "occur_time", HDB_OP_GE, MakeLocalTimeMs(2026, 6, 13, 0, 0, 0, 0));
-    HdbQueryOrderBy(query, "occur_time", HDB_ORDER_DESC);
+    HdbQuerySelect(query, alarmSource, "id", "id");
+    HdbQuerySelect(query, alarmSource, "occur_time", "time");
+    HdbQueryWhereInt64(query, alarmSource, "occur_time", HDB_OP_GE, MakeLocalTimeMs(2026, 6, 13, 0, 0, 0, 0));
+    HdbQueryOrderBy(query, alarmSource, "occur_time", HDB_ORDER_DESC);
     HdbQueryLimit(query, 10, 0);
     ret = HdbQueryExecute(query, &result);
     if (ExpectHdbOk(session, ret, "execute timestamp query") != 0)
@@ -463,21 +495,29 @@ static int RunTimestampWhereSmoke(HDB_SESSION session)
 static int RunPointQuerySmoke(HDB_SESSION session)
 {
     HDB_QUERY query;
+    HDB_SOURCE pointSource;
     HDB_RESULT result;
     int ret;
 
     PrintTestTitle("固定表查询", "覆盖固定表 dataset 查询和 LIKE 条件");
     query = NULL;
+    pointSource = NULL;
     result = NULL;
-    ret = HdbQueryCreate(session, "point", &query);
+    ret = HdbQueryCreate(session, &query);
     if (ExpectHdbOk(session, ret, "create point query") != 0)
     {
         return 1;
     }
-    HdbQuerySelectPath(query, "id", "id");
-    HdbQuerySelectPath(query, "name", "pointName");
-    HdbQueryWhereStringLike(query, "name", "point%");
-    HdbQueryOrderBy(query, "name", HDB_ORDER_ASC);
+    ret = HdbQueryFrom(query, "point", &pointSource);
+    if (ExpectHdbOk(session, ret, "from point") != 0)
+    {
+        HdbQueryFree(query);
+        return 1;
+    }
+    HdbQuerySelect(query, pointSource, "id", "id");
+    HdbQuerySelect(query, pointSource, "name", "pointName");
+    HdbQueryWhereStringLike(query, pointSource, "name", "point%");
+    HdbQueryOrderBy(query, pointSource, "name", HDB_ORDER_ASC);
     HdbQueryLimit(query, 3, 0);
     ret = HdbQueryExecute(query, &result);
     if (ExpectHdbOk(session, ret, "execute point query") != 0)
@@ -507,18 +547,21 @@ static int RunPointQuerySmoke(HDB_SESSION session)
 static int RunServerErrorSmoke(HDB_SESSION session)
 {
     HDB_QUERY query;
+    HDB_SOURCE source;
     HDB_RESULT result;
     int ret;
 
     PrintTestTitle("错误响应", "覆盖 SERVER 返回的查询错误和 DLL 错误映射");
     query = NULL;
+    source = NULL;
     result = NULL;
-    ret = HdbQueryCreate(session, "alarm", &query);
+    ret = HdbQueryCreate(session, &query);
     if (ExpectHdbOk(session, ret, "create missing time query") != 0)
     {
         return 1;
     }
-    HdbQuerySelectPath(query, "level", "level");
+    HdbQueryFrom(query, "alarm", &source);
+    HdbQuerySelect(query, source, "level", "level");
     ret = HdbQueryExecute(query, &result);
     if (ExpectHdbError(session, ret, HDB_ERR_QUERY_NEED_TIME_RANGE, "missing time range") != 0)
     {
@@ -528,12 +571,14 @@ static int RunServerErrorSmoke(HDB_SESSION session)
     HdbQueryFree(query);
 
     query = NULL;
-    ret = HdbQueryCreate(session, "missing_dataset", &query);
+    source = NULL;
+    ret = HdbQueryCreate(session, &query);
     if (ExpectHdbOk(session, ret, "create missing dataset query") != 0)
     {
         return 1;
     }
-    HdbQuerySelectPath(query, "id", "id");
+    HdbQueryFrom(query, "missing_dataset", &source);
+    HdbQuerySelect(query, source, "id", "id");
     ret = HdbQueryExecute(query, &result);
     if (ExpectHdbError(session, ret, HDB_ERR_DATASET_NOT_FOUND, "missing dataset") != 0)
     {
@@ -543,14 +588,16 @@ static int RunServerErrorSmoke(HDB_SESSION session)
     HdbQueryFree(query);
 
     query = NULL;
-    ret = HdbQueryCreate(session, "alarm", &query);
+    source = NULL;
+    ret = HdbQueryCreate(session, &query);
     if (ExpectHdbOk(session, ret, "create type mismatch query") != 0)
     {
         return 1;
     }
+    HdbQueryFrom(query, "alarm", &source);
     HdbQueryTimeRange(query, MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 13, 0, 0, 0, 0));
-    HdbQuerySelectPath(query, "id", "id");
-    HdbQueryWhereStringEq(query, "level", "2");
+    HdbQuerySelect(query, source, "id", "id");
+    HdbQueryWhereStringEq(query, source, "level", "2");
     ret = HdbQueryExecute(query, &result);
     if (ExpectHdbError(session, ret, HDB_ERR_TYPE_MISMATCH, "where type mismatch") != 0)
     {

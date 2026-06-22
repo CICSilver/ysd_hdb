@@ -100,17 +100,17 @@ CHdbQuerySqlBuilder::CHdbQuerySqlBuilder(const CHdbDatasetRegistry* registry)
 
 int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& outQuery)
 {
-    const HdbDatasetDef* rootDataset;
-    std::vector<HdbResolvedFieldPath> selectPaths;
-    std::vector<HdbResolvedFieldPath> wherePaths;
-    std::vector<HdbResolvedFieldPath> orderPaths;
-    std::vector<JoinInfo> joins;
+    std::vector<ResolvedSource> sources;
+    std::vector<ResolvedField> selectFields;
+    std::vector<ResolvedField> whereFields;
+    std::vector<ResolvedField> orderFields;
     std::vector<std::string> rootColumns;
     std::string sourceSql;
     std::string joinSql;
     std::string whereSql;
     std::string orderSql;
     std::ostringstream sql;
+    const ResolvedSource* rootSource;
     int ret;
     size_t i;
     int limitValue;
@@ -123,61 +123,68 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
         SetLastError("dataset registry is NULL");
         return HDB_ERR_PARAM;
     }
-    if (m_registry->ValidateIdentifier(ast.rootDataset.c_str()) != HDB_OK)
-    {
-        SetLastError(m_registry->GetLastError());
-        return HDB_ERR_DATASET_NOT_FOUND;
-    }
-    rootDataset = m_registry->FindDataset(ast.rootDataset.c_str());
-    if (rootDataset == NULL)
-    {
-        SetLastError("root dataset is not found");
-        return HDB_ERR_DATASET_NOT_FOUND;
-    }
-    ret = m_registry->ValidateDataset(*rootDataset);
-    if (ret != HDB_OK)
-    {
-        SetLastError(m_registry->GetLastError());
-        return ret;
-    }
     if (ast.selects.empty())
     {
         SetLastError("query has no select fields");
         return HDB_ERR_PARAM;
-    }
-    if (rootDataset->shard.shardType == HDB_SHARD_DAY && !ast.hasTimeRange)
-    {
-        SetLastError("day shard query requires time range");
-        return HDB_ERR_QUERY_NEED_TIME_RANGE;
     }
     if (ast.limit > HDB_QUERY_MAX_LIMIT || ast.offset < 0)
     {
         SetLastError("query limit exceeds range");
         return HDB_ERR_QUERY_RANGE;
     }
-
-    // 先把所有字段路径解析出来，后面拼 SQL 时只使用元数据里的表名和列名
-    ret = ResolveAndCollect(ast, *rootDataset, selectPaths, wherePaths, orderPaths, joins, rootColumns);
+    ret = ResolveSources(ast, sources);
     if (ret != HDB_OK)
     {
         return ret;
     }
-    ret = BuildRootSource(ast, *rootDataset, rootColumns, wherePaths, outQuery, sourceSql);
+    rootSource = FindResolvedSource(sources, 0);
+    if (rootSource == NULL)
+    {
+        SetLastError("root source is missing");
+        return HDB_ERR_PARAM;
+    }
+    if (rootSource->dataset->shard.shardType == HDB_SHARD_DAY && !ast.hasTimeRange)
+    {
+        SetLastError("day shard query requires time range");
+        return HDB_ERR_QUERY_NEED_TIME_RANGE;
+    }
+    ret = ResolveSelectFields(ast, sources, selectFields);
     if (ret != HDB_OK)
     {
         return ret;
     }
-    ret = BuildJoins(joins, joinSql);
+    ret = ResolveWhereFields(ast, sources, whereFields);
     if (ret != HDB_OK)
     {
         return ret;
     }
-    ret = BuildWhere(ast, *rootDataset, wherePaths, joins, outQuery, whereSql);
+    ret = ResolveOrderFields(ast, sources, orderFields);
     if (ret != HDB_OK)
     {
         return ret;
     }
-    ret = BuildOrder(ast, orderPaths, joins, orderSql);
+    ret = CollectRootColumns(ast, sources, selectFields, whereFields, orderFields, rootColumns);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    ret = BuildRootSource(ast, *rootSource, rootColumns, whereFields, outQuery, sourceSql);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    ret = BuildJoins(sources, joinSql);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    ret = BuildWhere(ast, *rootSource, whereFields, outQuery, whereSql);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    ret = BuildOrder(ast, orderFields, orderSql);
     if (ret != HDB_OK)
     {
         return ret;
@@ -185,10 +192,10 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
 
     sql << "select ";
     // 对外输出名不直接进入 SQL，SQL 只使用 c1/c2 这类稳定别名
-    for (i = 0; i < selectPaths.size(); ++i)
+    for (i = 0; i < selectFields.size(); ++i)
     {
         std::string expr;
-        ret = AppendFieldExpr(selectPaths[i], joins, expr);
+        ret = AppendFieldExpr(selectFields[i], expr);
         if (ret != HDB_OK)
         {
             return ret;
@@ -199,7 +206,7 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
         }
         sql << expr << " as c" << (i + 1);
         outQuery.outputNames.push_back(ast.selects[i].outputName);
-        outQuery.outputTypes.push_back(selectPaths[i].field->type);
+        outQuery.outputTypes.push_back(selectFields[i].field->type);
     }
     sql << " from " << sourceSql;
     if (!joinSql.empty())
@@ -230,153 +237,299 @@ const char* CHdbQuerySqlBuilder::GetLastError() const
     return m_lastError.c_str();
 }
 
-int CHdbQuerySqlBuilder::ResolveAndCollect(const CHdbQueryAst& ast,
-    const HdbDatasetDef& rootDataset,
-    std::vector<HdbResolvedFieldPath>& selectPaths,
-    std::vector<HdbResolvedFieldPath>& wherePaths,
-    std::vector<HdbResolvedFieldPath>& orderPaths,
-    std::vector<JoinInfo>& joins,
-    std::vector<std::string>& rootColumns)
+int CHdbQuerySqlBuilder::ResolveSources(const CHdbQueryAst& ast, std::vector<ResolvedSource>& sources)
 {
-    CHdbFieldPathResolver resolver(m_registry);
     size_t i;
-    int ret;
+    int rootCount;
 
-    if (rootDataset.shard.shardType == HDB_SHARD_DAY)
+    sources.clear();
+    if (ast.sources.empty() || ast.sources.size() > HDB_QUERY_MAX_SOURCE_COUNT)
     {
-        const HdbFieldDef* routeField = m_registry->FindField(rootDataset, rootDataset.shard.routeFieldName);
-        if (routeField == NULL)
-        {
-            SetLastError("route field is not found");
-            return HDB_ERR_SHARD_DEF;
-        }
-        // 日分片查询的 root 子查询带上 route 字段用于时间过滤
-        AddRootColumn(rootColumns, routeField->columnName);
+        SetLastError("query source list is invalid");
+        return HDB_ERR_PARAM;
     }
+    rootCount = 0;
+    for (i = 0; i < ast.sources.size(); ++i)
+    {
+        const HdbQuerySourceItem& source = ast.sources[i];
+        ResolvedSource resolved;
 
+        if (source.sourceId != (int)i)
+        {
+            SetLastError("query source id is invalid");
+            return HDB_ERR_PARAM;
+        }
+        resolved.sourceId = source.sourceId;
+        resolved.parentSourceId = source.parentSourceId;
+        resolved.dataset = NULL;
+        resolved.association = NULL;
+        resolved.localField = NULL;
+        resolved.targetField = NULL;
+        resolved.joinType = source.joinType;
+        resolved.sqlAlias = AliasForSource(source.sourceId);
+        if (source.sourceType == HDB_SOURCE_ROOT)
+        {
+            const HdbDatasetDef* dataset;
+            int ret;
+
+            ++rootCount;
+            if (source.sourceId != 0 || source.parentSourceId != -1 || source.joinType != 0)
+            {
+                SetLastError("root source is invalid");
+                return HDB_ERR_PARAM;
+            }
+            if (m_registry->ValidateIdentifier(source.datasetName.c_str()) != HDB_OK)
+            {
+                SetLastError(m_registry->GetLastError());
+                return HDB_ERR_DATASET_NOT_FOUND;
+            }
+            dataset = m_registry->FindDataset(source.datasetName.c_str());
+            if (dataset == NULL)
+            {
+                SetLastError("root dataset is not found");
+                return HDB_ERR_DATASET_NOT_FOUND;
+            }
+            ret = m_registry->ValidateDataset(*dataset);
+            if (ret != HDB_OK)
+            {
+                SetLastError(m_registry->GetLastError());
+                return ret;
+            }
+            resolved.dataset = dataset;
+        }
+        else if (source.sourceType == HDB_SOURCE_JOIN)
+        {
+            const ResolvedSource* parentSource;
+            const HdbAssociationDef* association;
+            const HdbDatasetDef* targetDataset;
+            int ret;
+
+            if (source.parentSourceId < 0 ||
+                source.parentSourceId >= source.sourceId ||
+                ValidateJoinType(source.joinType) != HDB_OK)
+            {
+                SetLastError("join source is invalid");
+                return HDB_ERR_QUERY_RANGE;
+            }
+            parentSource = FindResolvedSource(sources, source.parentSourceId);
+            if (parentSource == NULL || parentSource->dataset == NULL)
+            {
+                SetLastError("join parent source is missing");
+                return HDB_ERR_FIELD_REF;
+            }
+            if (m_registry->ValidateIdentifier(source.associationName.c_str()) != HDB_OK)
+            {
+                SetLastError(m_registry->GetLastError());
+                return HDB_ERR_ASSOCIATION_NOT_FOUND;
+            }
+            association = m_registry->FindAssociation(parentSource->dataset->datasetName,
+                source.associationName.c_str());
+            if (association == NULL)
+            {
+                SetLastError("association is not found");
+                return HDB_ERR_ASSOCIATION_NOT_FOUND;
+            }
+            ret = m_registry->ValidateAssociation(*association);
+            if (ret != HDB_OK)
+            {
+                SetLastError(m_registry->GetLastError());
+                return ret;
+            }
+            targetDataset = m_registry->FindDataset(association->targetDataset);
+            if (targetDataset == NULL)
+            {
+                SetLastError("association target dataset is missing");
+                return HDB_ERR_ASSOCIATION_NOT_FOUND;
+            }
+            ret = ValidateJoinTargetDataset(*targetDataset);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            resolved.association = association;
+            resolved.dataset = targetDataset;
+            resolved.localField = m_registry->FindField(*parentSource->dataset, association->localFieldName);
+            resolved.targetField = m_registry->FindField(*targetDataset, association->targetFieldName);
+            if (resolved.localField == NULL || resolved.targetField == NULL)
+            {
+                SetLastError("association field is missing");
+                return HDB_ERR_ASSOCIATION_NOT_FOUND;
+            }
+        }
+        else
+        {
+            SetLastError("source type is invalid");
+            return HDB_ERR_PARAM;
+        }
+        sources.push_back(resolved);
+    }
+    if (rootCount != 1 || sources[0].dataset == NULL)
+    {
+        SetLastError("query must have exactly one root source");
+        return HDB_ERR_PARAM;
+    }
+    return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::ResolveSelectFields(const CHdbQueryAst& ast,
+    const std::vector<ResolvedSource>& sources,
+    std::vector<ResolvedField>& fields)
+{
+    size_t i;
+
+    fields.clear();
     for (i = 0; i < ast.selects.size(); ++i)
     {
-        HdbResolvedFieldPath path;
-        ret = resolver.Resolve(rootDataset, ast.selects[i].fieldPath.c_str(), path);
-        if (ret != HDB_OK)
-        {
-            SetLastError(resolver.GetLastError());
-            return ret;
-        }
-        ret = AddRelationJoins(path, joins);
+        ResolvedField field;
+        int ret = ResolveFieldRef(sources, ast.selects[i].field, field);
         if (ret != HDB_OK)
         {
             return ret;
         }
-        if (path.relations.empty())
-        {
-            AddRootColumn(rootColumns, path.field->columnName);
-        }
-        selectPaths.push_back(path);
+        fields.push_back(field);
     }
+    return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::ResolveWhereFields(const CHdbQueryAst& ast,
+    const std::vector<ResolvedSource>& sources,
+    std::vector<ResolvedField>& fields)
+{
+    size_t i;
+
+    fields.clear();
     for (i = 0; i < ast.wheres.size(); ++i)
     {
-        HdbResolvedFieldPath path;
-        ret = resolver.Resolve(rootDataset, ast.wheres[i].fieldPath.c_str(), path);
-        if (ret != HDB_OK)
-        {
-            SetLastError(resolver.GetLastError());
-            return ret;
-        }
-        ret = AddRelationJoins(path, joins);
+        ResolvedField field;
+        int ret = ResolveFieldRef(sources, ast.wheres[i].field, field);
         if (ret != HDB_OK)
         {
             return ret;
         }
-        if (path.relations.empty())
-        {
-            AddRootColumn(rootColumns, path.field->columnName);
-        }
-        wherePaths.push_back(path);
+        fields.push_back(field);
     }
+    return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::ResolveOrderFields(const CHdbQueryAst& ast,
+    const std::vector<ResolvedSource>& sources,
+    std::vector<ResolvedField>& fields)
+{
+    size_t i;
+
+    fields.clear();
     for (i = 0; i < ast.orders.size(); ++i)
     {
-        HdbResolvedFieldPath path;
+        ResolvedField field;
+        int ret;
+
         if (ValidateOrderType(ast.orders[i].orderType) != HDB_OK)
         {
             SetLastError("invalid order type");
             return HDB_ERR_QUERY_RANGE;
         }
-        ret = resolver.Resolve(rootDataset, ast.orders[i].fieldPath.c_str(), path);
-        if (ret != HDB_OK)
-        {
-            SetLastError(resolver.GetLastError());
-            return ret;
-        }
-        ret = AddRelationJoins(path, joins);
+        ret = ResolveFieldRef(sources, ast.orders[i].field, field);
         if (ret != HDB_OK)
         {
             return ret;
         }
-        if (path.relations.empty())
-        {
-            AddRootColumn(rootColumns, path.field->columnName);
-        }
-        orderPaths.push_back(path);
-    }
-    for (i = 0; i < joins.size(); ++i)
-    {
-        if (strcmp(joins[i].fromAlias.c_str(), "r") == 0)
-        {
-            const HdbFieldDef* fromField = m_registry->FindField(*joins[i].fromDataset, joins[i].relation->fromFieldName);
-            if (fromField == NULL)
-            {
-                SetLastError("join root field is not found");
-                return HDB_ERR_FIELD_NOT_FOUND;
-            }
-            AddRootColumn(rootColumns, fromField->columnName);
-        }
+        fields.push_back(field);
     }
     return HDB_OK;
 }
 
-int CHdbQuerySqlBuilder::AddRelationJoins(const HdbResolvedFieldPath& path, std::vector<JoinInfo>& joins)
+int CHdbQuerySqlBuilder::ResolveFieldRef(const std::vector<ResolvedSource>& sources,
+    const HdbQueryFieldRef& fieldRef,
+    ResolvedField& outField)
 {
+    const ResolvedSource* source;
+    const HdbFieldDef* field;
+
+    source = FindResolvedSource(sources, fieldRef.sourceId);
+    if (source == NULL || source->dataset == NULL)
+    {
+        SetLastError("field source is not found");
+        return HDB_ERR_FIELD_REF;
+    }
+    if (m_registry->ValidateIdentifier(fieldRef.fieldName.c_str()) != HDB_OK)
+    {
+        SetLastError(m_registry->GetLastError());
+        return HDB_ERR_FIELD_NOT_FOUND;
+    }
+    field = m_registry->FindField(*source->dataset, fieldRef.fieldName.c_str());
+    if (field == NULL)
+    {
+        SetLastError("field is not found in source dataset");
+        return HDB_ERR_FIELD_NOT_FOUND;
+    }
+    outField.sourceId = fieldRef.sourceId;
+    outField.dataset = source->dataset;
+    outField.field = field;
+    outField.sqlAlias = source->sqlAlias;
+    return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::CollectRootColumns(const CHdbQueryAst& ast,
+    const std::vector<ResolvedSource>& sources,
+    const std::vector<ResolvedField>& selectFields,
+    const std::vector<ResolvedField>& whereFields,
+    const std::vector<ResolvedField>& orderFields,
+    std::vector<std::string>& rootColumns)
+{
+    const ResolvedSource* rootSource;
     size_t i;
 
-    for (i = 0; i < path.relations.size(); ++i)
+    (void)ast;
+    rootColumns.clear();
+    rootSource = FindResolvedSource(sources, 0);
+    if (rootSource == NULL || rootSource->dataset == NULL)
     {
-        const HdbResolvedRelationStep& step = path.relations[i];
-        JoinInfo join;
-        int exists;
-
-        exists = FindJoin(joins, step.path.c_str());
-        if (exists >= 0)
+        SetLastError("root source is missing");
+        return HDB_ERR_PARAM;
+    }
+    if (rootSource->dataset->shard.shardType == HDB_SHARD_DAY)
+    {
+        const HdbFieldDef* routeField = m_registry->FindField(*rootSource->dataset,
+            rootSource->dataset->shard.routeFieldName);
+        if (routeField == NULL)
         {
-            continue;
-        }
-        if (ValidateRelationDataset(*step.toDataset) != HDB_OK)
-        {
+            SetLastError("route field is not found");
             return HDB_ERR_SHARD_DEF;
         }
-        join.path = step.path;
-        join.relation = step.relation;
-        join.fromDataset = step.fromDataset;
-        join.toDataset = step.toDataset;
-        // 同一个 relation path 只生成一次 JOIN，多个 select/where/order 复用别名
-        if (i == 0)
+        AddRootColumn(rootColumns, routeField->columnName);
+    }
+    for (i = 0; i < selectFields.size(); ++i)
+    {
+        if (selectFields[i].sourceId == 0)
         {
-            join.fromAlias = "r";
+            AddRootColumn(rootColumns, selectFields[i].field->columnName);
         }
-        else
+    }
+    for (i = 0; i < whereFields.size(); ++i)
+    {
+        if (whereFields[i].sourceId == 0)
         {
-            int parentIndex;
-            parentIndex = FindJoin(joins, path.relations[i - 1].path.c_str());
-            if (parentIndex < 0)
+            AddRootColumn(rootColumns, whereFields[i].field->columnName);
+        }
+    }
+    for (i = 0; i < orderFields.size(); ++i)
+    {
+        if (orderFields[i].sourceId == 0)
+        {
+            AddRootColumn(rootColumns, orderFields[i].field->columnName);
+        }
+    }
+    for (i = 1; i < sources.size(); ++i)
+    {
+        if (sources[i].parentSourceId == 0)
+        {
+            if (sources[i].localField == NULL)
             {
-                SetLastError("parent join is missing");
-                return HDB_ERR_RELATION_NOT_FOUND;
+                SetLastError("root join local field is missing");
+                return HDB_ERR_ASSOCIATION_NOT_FOUND;
             }
-            join.fromAlias = joins[parentIndex].toAlias;
+            AddRootColumn(rootColumns, sources[i].localField->columnName);
         }
-        join.toAlias = "j";
-        join.toAlias += IntToString((int)joins.size() + 1);
-        joins.push_back(join);
     }
     return HDB_OK;
 }
@@ -400,28 +553,26 @@ int CHdbQuerySqlBuilder::AddRootColumn(std::vector<std::string>& rootColumns, co
     return HDB_OK;
 }
 
-int CHdbQuerySqlBuilder::FindJoin(const std::vector<JoinInfo>& joins, const char* path) const
+const CHdbQuerySqlBuilder::ResolvedSource* CHdbQuerySqlBuilder::FindResolvedSource(
+    const std::vector<ResolvedSource>& sources,
+    int sourceId) const
 {
     size_t i;
 
-    if (path == NULL)
+    for (i = 0; i < sources.size(); ++i)
     {
-        return -1;
-    }
-    for (i = 0; i < joins.size(); ++i)
-    {
-        if (joins[i].path == path)
+        if (sources[i].sourceId == sourceId)
         {
-            return (int)i;
+            return &sources[i];
         }
     }
-    return -1;
+    return NULL;
 }
 
 int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
-    const HdbDatasetDef& rootDataset,
+    const ResolvedSource& rootSource,
     const std::vector<std::string>& rootColumns,
-    const std::vector<HdbResolvedFieldPath>& wherePaths,
+    const std::vector<ResolvedField>& whereFields,
     HdbBuiltQuery& outQuery,
     std::string& outSource)
 {
@@ -436,16 +587,15 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
     const HdbFieldDef* routeField;
 
     outSource.clear();
-    // root source 由分片路由决定，查询层不直接推导物理表名
-    ret = m_router.ResolveQueryTables(rootDataset, ast.beginMs, ast.endMs, tableNames);
+    ret = m_router.ResolveQueryTables(*rootSource.dataset, ast.beginMs, ast.endMs, tableNames);
     if (ret != HDB_OK)
     {
         SetLastError(m_router.GetLastError());
         return ret;
     }
-    if (rootDataset.shard.shardType != HDB_SHARD_DAY)
+    if (rootSource.dataset->shard.shardType != HDB_SHARD_DAY)
     {
-        outSource = tableNames[0] + " r";
+        outSource = tableNames[0] + " " + rootSource.sqlAlias;
         return HDB_OK;
     }
     if (rootColumns.empty())
@@ -453,8 +603,7 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
         SetLastError("root column list is empty");
         return HDB_ERR_QUERY_RANGE;
     }
-
-    routeField = m_registry->FindField(rootDataset, rootDataset.shard.routeFieldName);
+    routeField = m_registry->FindField(*rootSource.dataset, rootSource.dataset->shard.routeFieldName);
     if (routeField == NULL)
     {
         SetLastError("route field is not found");
@@ -463,14 +612,14 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
     beginParam = AddParam(outQuery, FormatTimestampMs((HdbInt64)ast.beginMs));
     endParam = AddParam(outQuery, FormatTimestampMs((HdbInt64)ast.endMs));
     // 对日分片 root 字段的 where 下推到每个分片子查询
-    for (i = 0; i < wherePaths.size(); ++i)
+    for (i = 0; i < whereFields.size(); ++i)
     {
         const char* opText;
         std::string paramValue;
         int paramIndex;
         int formatRet;
 
-        if (!wherePaths[i].relations.empty())
+        if (whereFields[i].sourceId != 0)
         {
             continue;
         }
@@ -480,7 +629,7 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
             SetLastError("unsupported root compare op");
             return HDB_ERR_QUERY_RANGE;
         }
-        formatRet = FormatWhereParamValue(wherePaths[i], ast.wheres[i], paramValue);
+        formatRet = FormatWhereParamValue(whereFields[i], ast.wheres[i], paramValue);
         if (formatRet != HDB_OK)
         {
             return formatRet;
@@ -490,14 +639,14 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
         {
             pushdownWhere += " and ";
         }
-        pushdownWhere += wherePaths[i].field->columnName;
+        pushdownWhere += whereFields[i].field->columnName;
         pushdownWhere += " ";
         pushdownWhere += opText;
         pushdownWhere += " ";
         pushdownWhere += Placeholder(paramIndex);
     }
     sql << "(";
-    // 日分片按物理表 union all 成 root 别名，后续 JOIN 只面对 r
+    // 日分片按物理表 union all 成 root source，后续 JOIN 只面对 s0
     for (i = 0; i < tableNames.size(); ++i)
     {
         if (i > 0)
@@ -521,47 +670,48 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
             sql << " and " << pushdownWhere;
         }
     }
-    sql << ") r";
+    sql << ") " << rootSource.sqlAlias;
     outSource = sql.str();
     return HDB_OK;
 }
 
-int CHdbQuerySqlBuilder::BuildJoins(const std::vector<JoinInfo>& joins, std::string& outSql)
+int CHdbQuerySqlBuilder::BuildJoins(const std::vector<ResolvedSource>& sources, std::string& outSql)
 {
     std::ostringstream sql;
     size_t i;
 
     outSql.clear();
-    for (i = 0; i < joins.size(); ++i)
+    for (i = 1; i < sources.size(); ++i)
     {
-        const JoinInfo& join = joins[i];
-        const HdbFieldDef* fromField;
-        const HdbFieldDef* toField;
+        const ResolvedSource& source = sources[i];
+        const ResolvedSource* parentSource;
 
-        fromField = m_registry->FindField(*join.fromDataset, join.relation->fromFieldName);
-        toField = m_registry->FindField(*join.toDataset, join.relation->toFieldName);
-        if (fromField == NULL || toField == NULL)
+        parentSource = FindResolvedSource(sources, source.parentSourceId);
+        if (parentSource == NULL ||
+            parentSource->dataset == NULL ||
+            source.dataset == NULL ||
+            source.localField == NULL ||
+            source.targetField == NULL)
         {
-            SetLastError("join field is not found");
-            return HDB_ERR_FIELD_NOT_FOUND;
+            SetLastError("join source is incomplete");
+            return HDB_ERR_ASSOCIATION_NOT_FOUND;
         }
-        if (i > 0)
+        if (i > 1)
         {
             sql << " ";
         }
-        sql << (join.relation->joinType == HDB_JOIN_INNER ? "inner join " : "left join ")
-            << join.toDataset->shard.tableName << " " << join.toAlias
-            << " on " << join.fromAlias << "." << fromField->columnName
-            << " = " << join.toAlias << "." << toField->columnName;
+        sql << (source.joinType == HDB_JOIN_INNER ? "inner join " : "left join ")
+            << source.dataset->shard.tableName << " " << source.sqlAlias
+            << " on " << parentSource->sqlAlias << "." << source.localField->columnName
+            << " = " << source.sqlAlias << "." << source.targetField->columnName;
     }
     outSql = sql.str();
     return HDB_OK;
 }
 
 int CHdbQuerySqlBuilder::BuildWhere(const CHdbQueryAst& ast,
-    const HdbDatasetDef& rootDataset,
-    const std::vector<HdbResolvedFieldPath>& wherePaths,
-    const std::vector<JoinInfo>& joins,
+    const ResolvedSource& rootSource,
+    const std::vector<ResolvedField>& whereFields,
     HdbBuiltQuery& outQuery,
     std::string& outSql)
 {
@@ -571,9 +721,10 @@ int CHdbQuerySqlBuilder::BuildWhere(const CHdbQueryAst& ast,
 
     outSql.clear();
     first = 1;
-    if (rootDataset.shard.shardType == HDB_SHARD_DB_PARTITION && ast.hasTimeRange)
+    if (rootSource.dataset->shard.shardType == HDB_SHARD_DB_PARTITION && ast.hasTimeRange)
     {
-        const HdbFieldDef* routeField = m_registry->FindField(rootDataset, rootDataset.shard.routeFieldName);
+        const HdbFieldDef* routeField = m_registry->FindField(*rootSource.dataset,
+            rootSource.dataset->shard.routeFieldName);
         int beginParam;
         int endParam;
         if (routeField == NULL)
@@ -583,12 +734,12 @@ int CHdbQuerySqlBuilder::BuildWhere(const CHdbQueryAst& ast,
         }
         beginParam = AddParam(outQuery, FormatTimestampMs((HdbInt64)ast.beginMs));
         endParam = AddParam(outQuery, FormatTimestampMs((HdbInt64)ast.endMs));
-        sql << "r." << routeField->columnName << " >= " << Placeholder(beginParam)
-            << " and r." << routeField->columnName << " < " << Placeholder(endParam);
+        sql << rootSource.sqlAlias << "." << routeField->columnName << " >= " << Placeholder(beginParam)
+            << " and " << rootSource.sqlAlias << "." << routeField->columnName << " < " << Placeholder(endParam);
         first = 0;
     }
 
-    for (i = 0; i < wherePaths.size(); ++i)
+    for (i = 0; i < whereFields.size(); ++i)
     {
         std::string expr;
         std::string paramValue;
@@ -596,7 +747,7 @@ int CHdbQuerySqlBuilder::BuildWhere(const CHdbQueryAst& ast,
         int paramIndex;
         int formatRet;
 
-        if (rootDataset.shard.shardType == HDB_SHARD_DAY && wherePaths[i].relations.empty())
+        if (rootSource.dataset->shard.shardType == HDB_SHARD_DAY && whereFields[i].sourceId == 0)
         {
             // 已下推到日分片子查询的 root 条件不再重复拼一次
             continue;
@@ -607,11 +758,11 @@ int CHdbQuerySqlBuilder::BuildWhere(const CHdbQueryAst& ast,
             SetLastError("unsupported compare op");
             return HDB_ERR_QUERY_RANGE;
         }
-        if (AppendFieldExpr(wherePaths[i], joins, expr) != HDB_OK)
+        if (AppendFieldExpr(whereFields[i], expr) != HDB_OK)
         {
-            return HDB_ERR_FIELD_PATH;
+            return HDB_ERR_FIELD_REF;
         }
-        formatRet = FormatWhereParamValue(wherePaths[i], ast.wheres[i], paramValue);
+        formatRet = FormatWhereParamValue(whereFields[i], ast.wheres[i], paramValue);
         if (formatRet != HDB_OK)
         {
             return formatRet;
@@ -629,20 +780,19 @@ int CHdbQuerySqlBuilder::BuildWhere(const CHdbQueryAst& ast,
 }
 
 int CHdbQuerySqlBuilder::BuildOrder(const CHdbQueryAst& ast,
-    const std::vector<HdbResolvedFieldPath>& orderPaths,
-    const std::vector<JoinInfo>& joins,
+    const std::vector<ResolvedField>& orderFields,
     std::string& outSql)
 {
     std::ostringstream sql;
     size_t i;
 
     outSql.clear();
-    for (i = 0; i < orderPaths.size(); ++i)
+    for (i = 0; i < orderFields.size(); ++i)
     {
         std::string expr;
-        if (AppendFieldExpr(orderPaths[i], joins, expr) != HDB_OK)
+        if (AppendFieldExpr(orderFields[i], expr) != HDB_OK)
         {
-            return HDB_ERR_FIELD_PATH;
+            return HDB_ERR_FIELD_REF;
         }
         if (i > 0)
         {
@@ -654,39 +804,20 @@ int CHdbQuerySqlBuilder::BuildOrder(const CHdbQueryAst& ast,
     return HDB_OK;
 }
 
-int CHdbQuerySqlBuilder::AppendFieldExpr(const HdbResolvedFieldPath& path,
-    const std::vector<JoinInfo>& joins,
-    std::string& outExpr)
+int CHdbQuerySqlBuilder::AppendFieldExpr(const ResolvedField& field, std::string& outExpr)
 {
-    std::string alias;
-
-    if (path.field == NULL)
+    if (field.field == NULL || field.sqlAlias.empty())
     {
-        SetLastError("resolved field is NULL");
-        return HDB_ERR_FIELD_PATH;
+        SetLastError("resolved field is invalid");
+        return HDB_ERR_FIELD_REF;
     }
-    if (path.relations.empty())
-    {
-        alias = "r";
-    }
-    else
-    {
-        int joinIndex = FindJoin(joins, path.relations[path.relations.size() - 1].path.c_str());
-        if (joinIndex < 0)
-        {
-            SetLastError("field join is not found");
-            return HDB_ERR_RELATION_NOT_FOUND;
-        }
-        alias = joins[joinIndex].toAlias;
-    }
-    // 无 relation 的字段来自 root 别名 r，有 relation 的字段来自最后一级 JOIN
-    outExpr = alias;
+    outExpr = field.sqlAlias;
     outExpr += ".";
-    outExpr += path.field->columnName;
+    outExpr += field.field->columnName;
     return HDB_OK;
 }
 
-int CHdbQuerySqlBuilder::FormatWhereParamValue(const HdbResolvedFieldPath& path,
+int CHdbQuerySqlBuilder::FormatWhereParamValue(const ResolvedField& field,
     const HdbQueryWhereItem& whereItem,
     std::string& outValue)
 {
@@ -695,17 +826,17 @@ int CHdbQuerySqlBuilder::FormatWhereParamValue(const HdbResolvedFieldPath& path,
 
     outValue.clear();
     // 参数值按字段类型二次校验，SQL builder 是 SERVER 侧最后一道类型边界
-    if (path.field == NULL)
+    if (field.field == NULL)
     {
         SetLastError("where field is NULL");
-        return HDB_ERR_FIELD_PATH;
+        return HDB_ERR_FIELD_REF;
     }
-    if (whereItem.op == HDB_OP_LIKE && path.field->type != HDB_FT_CHAR_ARRAY)
+    if (whereItem.op == HDB_OP_LIKE && field.field->type != HDB_FT_CHAR_ARRAY)
     {
         SetLastError("like operator requires string field");
         return HDB_ERR_TYPE_MISMATCH;
     }
-    switch (path.field->type)
+    switch (field.field->type)
     {
     case HDB_FT_INT32:
         if (whereItem.valueType != HDB_QVT_INT32)
@@ -789,7 +920,7 @@ int CHdbQuerySqlBuilder::FormatWhereParamValue(const HdbResolvedFieldPath& path,
         return HDB_OK;
     default:
         SetLastError("unsupported where field type");
-        return HDB_ERR_FIELD_PATH;
+        return HDB_ERR_FIELD_REF;
     }
 }
 
@@ -866,7 +997,12 @@ int CHdbQuerySqlBuilder::ValidateOrderType(int orderType) const
     return (orderType == HDB_ORDER_ASC || orderType == HDB_ORDER_DESC) ? HDB_OK : HDB_ERR_QUERY_RANGE;
 }
 
-int CHdbQuerySqlBuilder::ValidateRelationDataset(const HdbDatasetDef& dataset)
+int CHdbQuerySqlBuilder::ValidateJoinType(int joinType) const
+{
+    return (joinType == HDB_JOIN_INNER || joinType == HDB_JOIN_LEFT) ? HDB_OK : HDB_ERR_QUERY_RANGE;
+}
+
+int CHdbQuerySqlBuilder::ValidateJoinTargetDataset(const HdbDatasetDef& dataset)
 {
     int ret;
 
@@ -879,10 +1015,17 @@ int CHdbQuerySqlBuilder::ValidateRelationDataset(const HdbDatasetDef& dataset)
     if (dataset.shard.shardType == HDB_SHARD_DAY)
     {
         // 当前 JOIN 目标只支持固定表或数据库分区，日分片目标会让别名和分片范围都变复杂
-        SetLastError("day sharded relation target is not supported in first query version");
+        SetLastError("day sharded association target is not supported");
         return HDB_ERR_SHARD_DEF;
     }
     return HDB_OK;
+}
+
+std::string CHdbQuerySqlBuilder::AliasForSource(int sourceId) const
+{
+    std::string alias = "s";
+    alias += IntToString(sourceId);
+    return alias;
 }
 
 void CHdbQuerySqlBuilder::SetLastError(const char* text)

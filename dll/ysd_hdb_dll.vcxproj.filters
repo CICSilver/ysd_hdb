@@ -56,6 +56,9 @@
     <ClInclude Include="..\common\HdbQueryAstCodec.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="HdbQueryBuilder.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="ysd_hdb.h">
       <Filter>头文件</Filter>
     </ClInclude>

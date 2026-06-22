@@ -30,6 +30,20 @@ static int HdbQueryCodecContainsUnsafeChar(const std::string& text)
     return 0;
 }
 
+static int HdbQueryCodecContainsDot(const std::string& text)
+{
+    size_t index;
+
+    for (index = 0; index < text.size(); ++index)
+    {
+        if (text[index] == '.')
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 CHdbQueryAstCodec::CHdbQueryAstCodec()
 {
 }
@@ -40,12 +54,11 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
     size_t index;
     int ret;
 
-    // AST 先做本地格式校验，再生成 SERVER 可重新解析的文本描述
     outText.clear();
-    ret = ValidateText(ast.rootDataset, "root dataset");
-    if (ret != HDB_OK)
+    if (!ast.HasRootSource() || ast.sources.size() > HDB_QUERY_MAX_SOURCE_COUNT)
     {
-        return ret;
+        SetLastError("query source is invalid");
+        return HDB_ERR_PARAM;
     }
     if (ast.selects.size() > HDB_QUERY_MAX_SELECT_COUNT ||
         ast.wheres.size() > HDB_QUERY_MAX_WHERE_COUNT ||
@@ -55,7 +68,49 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
         return HDB_ERR_QUERY_RANGE;
     }
     out << "ast_version=" << HDB_QUERY_AST_VERSION << "\n";
-    out << "root=" << ast.rootDataset << "\n";
+    for (index = 0; index < ast.sources.size(); ++index)
+    {
+        const HdbQuerySourceItem& source = ast.sources[index];
+        if (source.sourceId != (int)index)
+        {
+            SetLastError("query source id is invalid");
+            return HDB_ERR_PARAM;
+        }
+        if (source.sourceType == HDB_SOURCE_ROOT)
+        {
+            ret = ValidateNameText(source.datasetName, "root dataset");
+            if (ret != HDB_OK || source.sourceId != 0 || source.parentSourceId != -1 || source.joinType != 0)
+            {
+                SetLastError("invalid root source");
+                return HDB_ERR_PARAM;
+            }
+            out << "source=root|" << source.sourceId << "|" << source.datasetName << "\n";
+        }
+        else if (source.sourceType == HDB_SOURCE_JOIN)
+        {
+            ret = ValidateNameText(source.associationName, "association name");
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            if (source.parentSourceId < 0 ||
+                source.parentSourceId >= source.sourceId ||
+                ValidateJoinType(source.joinType) != HDB_OK)
+            {
+                SetLastError("invalid join source");
+                return HDB_ERR_QUERY_RANGE;
+            }
+            out << "source=join|" << source.sourceId << "|"
+                << source.parentSourceId << "|"
+                << source.associationName << "|"
+                << source.joinType << "\n";
+        }
+        else
+        {
+            SetLastError("invalid source type");
+            return HDB_ERR_QUERY_RANGE;
+        }
+    }
     if (ast.hasTimeRange)
     {
         if (ast.beginMs >= ast.endMs)
@@ -67,7 +122,7 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
     }
     for (index = 0; index < ast.selects.size(); ++index)
     {
-        ret = ValidateText(ast.selects[index].fieldPath, "select field path");
+        ret = ValidateNameText(ast.selects[index].field.fieldName, "select field name");
         if (ret != HDB_OK)
         {
             return ret;
@@ -77,11 +132,18 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
         {
             return ret;
         }
-        out << "select=" << ast.selects[index].fieldPath << "|" << ast.selects[index].outputName << "\n";
+        if (ast.FindSourceIndex(ast.selects[index].field.sourceId) < 0)
+        {
+            SetLastError("select source is invalid");
+            return HDB_ERR_FIELD_REF;
+        }
+        out << "select=" << ast.selects[index].field.sourceId << "|"
+            << ast.selects[index].field.fieldName << "|"
+            << ast.selects[index].outputName << "\n";
     }
     for (index = 0; index < ast.wheres.size(); ++index)
     {
-        ret = ValidateText(ast.wheres[index].fieldPath, "where field path");
+        ret = ValidateNameText(ast.wheres[index].field.fieldName, "where field name");
         if (ret != HDB_OK)
         {
             return ret;
@@ -101,14 +163,20 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
         {
             return ret;
         }
-        out << "where=" << ast.wheres[index].fieldPath << "|"
+        if (ast.FindSourceIndex(ast.wheres[index].field.sourceId) < 0)
+        {
+            SetLastError("where source is invalid");
+            return HDB_ERR_FIELD_REF;
+        }
+        out << "where=" << ast.wheres[index].field.sourceId << "|"
+            << ast.wheres[index].field.fieldName << "|"
             << ast.wheres[index].op << "|"
             << ast.wheres[index].valueType << "|"
             << ast.wheres[index].valueText << "\n";
     }
     for (index = 0; index < ast.orders.size(); ++index)
     {
-        ret = ValidateText(ast.orders[index].fieldPath, "order field path");
+        ret = ValidateNameText(ast.orders[index].field.fieldName, "order field name");
         if (ret != HDB_OK)
         {
             return ret;
@@ -118,7 +186,14 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
         {
             return ret;
         }
-        out << "order=" << ast.orders[index].fieldPath << "|" << ast.orders[index].orderType << "\n";
+        if (ast.FindSourceIndex(ast.orders[index].field.sourceId) < 0)
+        {
+            SetLastError("order source is invalid");
+            return HDB_ERR_FIELD_REF;
+        }
+        out << "order=" << ast.orders[index].field.sourceId << "|"
+            << ast.orders[index].field.fieldName << "|"
+            << ast.orders[index].orderType << "\n";
     }
     if (ast.limit < 0 || ast.limit > HDB_QUERY_MAX_LIMIT || ast.offset < 0)
     {
@@ -175,7 +250,6 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
         {
             continue;
         }
-        // 版本行先出现，避免旧格式被当成当前格式继续解析
         if (line.find("ast_version=") == 0)
         {
             int version;
@@ -191,11 +265,50 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
             SetLastError("query ast version is missing");
             return HDB_ERR_PARAM;
         }
-        else if (line.find("root=") == 0)
+        else if (line.find("source=") == 0)
         {
-            std::string value = line.substr(5);
-            if (ValidateText(value, "root dataset") != HDB_OK || outAst.SetRootDataset(value.c_str()) != 0)
+            std::vector<std::string> fields;
+            int sourceId;
+            int parentSourceId;
+            int joinType;
+            int addedSourceId;
+
+            if (SplitFields(line.substr(7), fields) != HDB_OK || fields.empty())
             {
+                SetLastError("invalid source item");
+                return HDB_ERR_PARAM;
+            }
+            if (fields[0] == "root")
+            {
+                if (fields.size() != 3 ||
+                    ParseInt32Strict(fields[1], &sourceId) != HDB_OK ||
+                    sourceId != 0 ||
+                    ValidateNameText(fields[2], "root dataset") != HDB_OK ||
+                    outAst.AddRootSource(fields[2].c_str(), &addedSourceId) != 0 ||
+                    addedSourceId != sourceId)
+                {
+                    SetLastError("invalid root source");
+                    return HDB_ERR_PARAM;
+                }
+            }
+            else if (fields[0] == "join")
+            {
+                if (fields.size() != 5 ||
+                    ParseInt32Strict(fields[1], &sourceId) != HDB_OK ||
+                    ParseInt32Strict(fields[2], &parentSourceId) != HDB_OK ||
+                    ValidateNameText(fields[3], "association name") != HDB_OK ||
+                    ParseInt32Strict(fields[4], &joinType) != HDB_OK ||
+                    ValidateJoinType(joinType) != HDB_OK ||
+                    outAst.AddJoinSource(parentSourceId, fields[3].c_str(), joinType, &addedSourceId) != 0 ||
+                    addedSourceId != sourceId)
+                {
+                    SetLastError("invalid join source");
+                    return HDB_ERR_QUERY_RANGE;
+                }
+            }
+            else
+            {
+                SetLastError("invalid source type");
                 return HDB_ERR_PARAM;
             }
         }
@@ -212,20 +325,16 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
         }
         else if (line.find("select=") == 0)
         {
-            size_t sep = line.find('|', 7);
-            std::string fieldPath;
-            std::string outputName;
-            if (sep == std::string::npos ||
-                outAst.selects.size() >= HDB_QUERY_MAX_SELECT_COUNT)
-            {
-                SetLastError("invalid select item");
-                return HDB_ERR_PARAM;
-            }
-            fieldPath = line.substr(7, sep - 7);
-            outputName = line.substr(sep + 1);
-            if (ValidateText(fieldPath, "select field path") != HDB_OK ||
-                ValidateText(outputName, "select output name") != HDB_OK ||
-                outAst.AddSelect(fieldPath.c_str(), outputName.c_str()) != 0)
+            std::vector<std::string> fields;
+            int sourceId;
+
+            if (SplitFields(line.substr(7), fields) != HDB_OK ||
+                fields.size() != 3 ||
+                outAst.selects.size() >= HDB_QUERY_MAX_SELECT_COUNT ||
+                ParseInt32Strict(fields[0], &sourceId) != HDB_OK ||
+                ValidateNameText(fields[1], "select field name") != HDB_OK ||
+                ValidateText(fields[2], "select output name") != HDB_OK ||
+                outAst.AddSelect(sourceId, fields[1].c_str(), fields[2].c_str()) != 0)
             {
                 SetLastError("invalid select item");
                 return HDB_ERR_PARAM;
@@ -233,40 +342,30 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
         }
         else if (line.find("where=") == 0)
         {
-            size_t p1 = line.find('|', 6);
-            size_t p2 = p1 == std::string::npos ? std::string::npos : line.find('|', p1 + 1);
-            size_t p3 = p2 == std::string::npos ? std::string::npos : line.find('|', p2 + 1);
-            std::string fieldPath;
-            std::string valueText;
+            std::vector<std::string> fields;
+            int sourceId;
             int op;
             int valueType;
 
-            if (p1 == std::string::npos || p2 == std::string::npos || p3 == std::string::npos ||
-                outAst.wheres.size() >= HDB_QUERY_MAX_WHERE_COUNT)
-            {
-                SetLastError("invalid where item");
-                return HDB_ERR_PARAM;
-            }
-            fieldPath = line.substr(6, p1 - 6);
-            valueText = line.substr(p3 + 1);
-            if (ValidateText(fieldPath, "where field path") != HDB_OK ||
-                ValidateText(valueText, "where value") != HDB_OK)
-            {
-                return HDB_ERR_PARAM;
-            }
-            if (ParseInt32Strict(line.substr(p1 + 1, p2 - p1 - 1), &op) != HDB_OK ||
-                ParseInt32Strict(line.substr(p2 + 1, p3 - p2 - 1), &valueType) != HDB_OK ||
+            if (SplitFields(line.substr(6), fields) != HDB_OK ||
+                fields.size() != 5 ||
+                outAst.wheres.size() >= HDB_QUERY_MAX_WHERE_COUNT ||
+                ParseInt32Strict(fields[0], &sourceId) != HDB_OK ||
+                ValidateNameText(fields[1], "where field name") != HDB_OK ||
+                ValidateText(fields[4], "where value") != HDB_OK ||
+                ParseInt32Strict(fields[2], &op) != HDB_OK ||
+                ParseInt32Strict(fields[3], &valueType) != HDB_OK ||
                 ValidateCompareOp(op) != HDB_OK ||
                 ValidateValueType(valueType) != HDB_OK)
             {
+                SetLastError("invalid where item");
                 return HDB_ERR_QUERY_RANGE;
             }
-            // where 值按声明类型重新转一遍，保证 DLL 传来的文本不是宽松格式
             if (valueType == HDB_QVT_INT32)
             {
                 int value;
-                if (ParseInt32Strict(valueText, &value) != HDB_OK ||
-                    outAst.AddWhereInt32(fieldPath.c_str(), op, value) != 0)
+                if (ParseInt32Strict(fields[4], &value) != HDB_OK ||
+                    outAst.AddWhereInt32(sourceId, fields[1].c_str(), op, value) != 0)
                 {
                     return HDB_ERR_QUERY_RANGE;
                 }
@@ -274,8 +373,8 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
             else if (valueType == HDB_QVT_INT64)
             {
                 HdbQueryInt64 value;
-                if (ParseInt64Strict(valueText, &value) != HDB_OK ||
-                    outAst.AddWhereInt64(fieldPath.c_str(), op, value) != 0)
+                if (ParseInt64Strict(fields[4], &value) != HDB_OK ||
+                    outAst.AddWhereInt64(sourceId, fields[1].c_str(), op, value) != 0)
                 {
                     return HDB_ERR_QUERY_RANGE;
                 }
@@ -283,33 +382,31 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
             else if (valueType == HDB_QVT_DOUBLE)
             {
                 double value;
-                if (ParseDoubleStrict(valueText, &value) != HDB_OK ||
-                    outAst.AddWhereDouble(fieldPath.c_str(), op, value) != 0)
+                if (ParseDoubleStrict(fields[4], &value) != HDB_OK ||
+                    outAst.AddWhereDouble(sourceId, fields[1].c_str(), op, value) != 0)
                 {
                     return HDB_ERR_QUERY_RANGE;
                 }
             }
-            else if (outAst.AddWhereString(fieldPath.c_str(), op, valueText.c_str()) != 0)
+            else if (outAst.AddWhereString(sourceId, fields[1].c_str(), op, fields[4].c_str()) != 0)
             {
                 return HDB_ERR_PARAM;
             }
         }
         else if (line.find("order=") == 0)
         {
-            size_t sep = line.find('|', 6);
-            std::string fieldPath;
+            std::vector<std::string> fields;
+            int sourceId;
             int orderType;
-            if (sep == std::string::npos ||
+
+            if (SplitFields(line.substr(6), fields) != HDB_OK ||
+                fields.size() != 3 ||
                 outAst.orders.size() >= HDB_QUERY_MAX_ORDER_COUNT ||
-                ParseInt32Strict(line.substr(sep + 1), &orderType) != HDB_OK ||
-                ValidateOrderType(orderType) != HDB_OK)
-            {
-                SetLastError("invalid order item");
-                return HDB_ERR_QUERY_RANGE;
-            }
-            fieldPath = line.substr(6, sep - 6);
-            if (ValidateText(fieldPath, "order field path") != HDB_OK ||
-                outAst.AddOrder(fieldPath.c_str(), orderType) != 0)
+                ParseInt32Strict(fields[0], &sourceId) != HDB_OK ||
+                ValidateNameText(fields[1], "order field name") != HDB_OK ||
+                ParseInt32Strict(fields[2], &orderType) != HDB_OK ||
+                ValidateOrderType(orderType) != HDB_OK ||
+                outAst.AddOrder(sourceId, fields[1].c_str(), orderType) != 0)
             {
                 SetLastError("invalid order item");
                 return HDB_ERR_QUERY_RANGE;
@@ -333,9 +430,9 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
             return HDB_ERR_PARAM;
         }
     }
-    if (!seenVersion || outAst.rootDataset.empty())
+    if (!seenVersion || !outAst.HasRootSource())
     {
-        SetLastError("query ast root is missing");
+        SetLastError("query ast source is missing");
         return HDB_ERR_PARAM;
     }
     return HDB_OK;
@@ -349,6 +446,23 @@ const char* CHdbQueryAstCodec::GetLastError() const
 int CHdbQueryAstCodec::ValidateText(const std::string& text, const char* name)
 {
     if (text.empty() || text.size() > HDB_QUERY_MAX_TEXT_LENGTH || HdbQueryCodecContainsUnsafeChar(text))
+    {
+        SetLastError(name);
+        return HDB_ERR_PARAM;
+    }
+    return HDB_OK;
+}
+
+int CHdbQueryAstCodec::ValidateNameText(const std::string& text, const char* name)
+{
+    int ret;
+
+    ret = ValidateText(text, name);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (HdbQueryCodecContainsDot(text))
     {
         SetLastError(name);
         return HDB_ERR_PARAM;
@@ -386,6 +500,16 @@ int CHdbQueryAstCodec::ValidateOrderType(int orderType)
         return HDB_OK;
     }
     SetLastError("invalid order type");
+    return HDB_ERR_QUERY_RANGE;
+}
+
+int CHdbQueryAstCodec::ValidateJoinType(int joinType)
+{
+    if (joinType == HDB_JOIN_INNER || joinType == HDB_JOIN_LEFT)
+    {
+        return HDB_OK;
+    }
+    SetLastError("invalid join type");
     return HDB_ERR_QUERY_RANGE;
 }
 
@@ -480,6 +604,27 @@ int CHdbQueryAstCodec::ParsePairInt32(const std::string& text, int* first, int* 
         ParseInt32Strict(text.substr(comma + 1), second) != HDB_OK)
     {
         return HDB_ERR_QUERY_RANGE;
+    }
+    return HDB_OK;
+}
+
+int CHdbQueryAstCodec::SplitFields(const std::string& text, std::vector<std::string>& fields)
+{
+    size_t pos;
+    size_t next;
+
+    fields.clear();
+    pos = 0;
+    while (pos <= text.size())
+    {
+        next = text.find('|', pos);
+        if (next == std::string::npos)
+        {
+            fields.push_back(text.substr(pos));
+            break;
+        }
+        fields.push_back(text.substr(pos, next - pos));
+        pos = next + 1;
     }
     return HDB_OK;
 }
