@@ -1,7 +1,9 @@
 ﻿#ifndef YSD_HDB_QUERY_BUILDER_H
 #define YSD_HDB_QUERY_BUILDER_H
 
-#include "ysd_hdb.h"
+#include "ysd_hdb_c.h"
+
+#include <stddef.h>
 
 class CHdbQueryBuilder
 {
@@ -24,6 +26,7 @@ public:
 
     CHdbQueryBuilder& From(const char* datasetName, HDB_SOURCE& outRootSource)
     {
+        outRootSource = NULL;
         if (m_error == HDB_OK)
         {
             m_error = HdbQueryFrom(m_query, datasetName, &outRootSource);
@@ -33,6 +36,7 @@ public:
 
     CHdbQueryBuilder& LeftJoin(HDB_SOURCE fromSource, const char* associationName, HDB_SOURCE& outTargetSource)
     {
+        outTargetSource = NULL;
         if (m_error == HDB_OK)
         {
             m_error = HdbQueryJoin(m_query, fromSource, associationName, HDB_JOIN_LEFT, &outTargetSource);
@@ -42,6 +46,7 @@ public:
 
     CHdbQueryBuilder& InnerJoin(HDB_SOURCE fromSource, const char* associationName, HDB_SOURCE& outTargetSource)
     {
+        outTargetSource = NULL;
         if (m_error == HDB_OK)
         {
             m_error = HdbQueryJoin(m_query, fromSource, associationName, HDB_JOIN_INNER, &outTargetSource);

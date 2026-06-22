@@ -163,6 +163,7 @@
     <ClInclude Include="..\common\HdbQueryAst.h" />
     <ClInclude Include="..\common\HdbQueryAstCodec.h" />
     <ClInclude Include="HdbQueryBuilder.h" />
+    <ClInclude Include="ysd_hdb_c.h" />
     <ClInclude Include="ysd_hdb.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -2,12 +2,18 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
-#include "ysd_hdb.h"
+#include "ysd_hdb_c.h"
 
 #include "../common/HdbIpcProtocol.h"
 #include "../common/HdbIpcResultCodec.h"
 #include "../common/HdbIpcSocket.h"
 #include "../common/HdbQueryAst.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
 
 #include <errno.h>
 #include <limits.h>
@@ -62,6 +68,80 @@ struct HdbResultTag
     std::string lastError;
 };
 
+class CHdbDllActiveSourceLock
+{
+public:
+    CHdbDllActiveSourceLock()
+    {
+#ifdef _WIN32
+        InitializeCriticalSection(&m_lock);
+#else
+        pthread_mutex_init(&m_lock, 0);
+#endif
+    }
+
+    ~CHdbDllActiveSourceLock()
+    {
+#ifdef _WIN32
+        DeleteCriticalSection(&m_lock);
+#else
+        pthread_mutex_destroy(&m_lock);
+#endif
+    }
+
+    void Lock()
+    {
+#ifdef _WIN32
+        EnterCriticalSection(&m_lock);
+#else
+        pthread_mutex_lock(&m_lock);
+#endif
+    }
+
+    void Unlock()
+    {
+#ifdef _WIN32
+        LeaveCriticalSection(&m_lock);
+#else
+        pthread_mutex_unlock(&m_lock);
+#endif
+    }
+
+private:
+    CHdbDllActiveSourceLock(const CHdbDllActiveSourceLock&);
+    CHdbDllActiveSourceLock& operator=(const CHdbDllActiveSourceLock&);
+
+private:
+#ifdef _WIN32
+    CRITICAL_SECTION m_lock;
+#else
+    pthread_mutex_t m_lock;
+#endif
+};
+
+class CHdbDllActiveSourceGuard
+{
+public:
+    explicit CHdbDllActiveSourceGuard(CHdbDllActiveSourceLock& lock)
+        : m_lock(lock)
+    {
+        m_lock.Lock();
+    }
+
+    ~CHdbDllActiveSourceGuard()
+    {
+        m_lock.Unlock();
+    }
+
+private:
+    CHdbDllActiveSourceGuard(const CHdbDllActiveSourceGuard&);
+    CHdbDllActiveSourceGuard& operator=(const CHdbDllActiveSourceGuard&);
+
+private:
+    CHdbDllActiveSourceLock& m_lock;
+};
+
+static CHdbDllActiveSourceLock g_hdbActiveSourceLock;
 static std::vector<HDB_SOURCE> g_hdbActiveSources;
 
 static void HdbDllSetSessionError(HDB_SESSION session, const char* text)
@@ -191,22 +271,22 @@ static int HdbDllFindColumn(HDB_RESULT result, const char* outputName)
     return -1;
 }
 
-static int HdbDllIsActiveSource(HDB_SOURCE source)
+static int HdbDllFindActiveSourceIndexNoLock(HDB_SOURCE source)
 {
     int i;
 
     if (source == NULL)
     {
-        return 0;
+        return -1;
     }
     for (i = 0; i < (int)g_hdbActiveSources.size(); ++i)
     {
         if (g_hdbActiveSources[i] == source)
         {
-            return 1;
+            return i;
         }
     }
-    return 0;
+    return -1;
 }
 
 static void HdbDllUnregisterSource(HDB_SOURCE source)
@@ -217,14 +297,29 @@ static void HdbDllUnregisterSource(HDB_SOURCE source)
     {
         return;
     }
-    for (i = 0; i < (int)g_hdbActiveSources.size(); ++i)
     {
-        if (g_hdbActiveSources[i] == source)
+        CHdbDllActiveSourceGuard guard(g_hdbActiveSourceLock);
+
+        i = HdbDllFindActiveSourceIndexNoLock(source);
+        if (i >= 0)
         {
             g_hdbActiveSources.erase(g_hdbActiveSources.begin() + i);
-            return;
         }
     }
+}
+
+static int HdbDllRegisterSource(HDB_SOURCE source)
+{
+    if (source == NULL)
+    {
+        return HDB_ERR_PARAM;
+    }
+    {
+        CHdbDllActiveSourceGuard guard(g_hdbActiveSourceLock);
+
+        g_hdbActiveSources.push_back(source);
+    }
+    return HDB_OK;
 }
 
 static int HdbDllCreateQuerySource(HDB_QUERY query, int sourceId, HDB_SOURCE* outSource)
@@ -246,7 +341,7 @@ static int HdbDllCreateQuerySource(HDB_QUERY query, int sourceId, HDB_SOURCE* ou
     {
         source->ownerQuery = query;
         source->sourceId = sourceId;
-        g_hdbActiveSources.push_back(source);
+        HdbDllRegisterSource(source);
         query->sources.push_back(source);
     }
     catch (...)
@@ -262,6 +357,8 @@ static int HdbDllCreateQuerySource(HDB_QUERY query, int sourceId, HDB_SOURCE* ou
 
 static int HdbDllValidateQuerySource(HDB_QUERY query, HDB_SOURCE source, int* outSourceId)
 {
+    int sourceId;
+
     if (outSourceId != NULL)
     {
         *outSourceId = -1;
@@ -270,24 +367,35 @@ static int HdbDllValidateQuerySource(HDB_QUERY query, HDB_SOURCE source, int* ou
     {
         return HDB_ERR_PARAM;
     }
-    if (!HdbDllIsActiveSource(source))
+    sourceId = -1;
     {
-        HdbDllSetQueryError(query, "query source is not active");
+        CHdbDllActiveSourceGuard guard(g_hdbActiveSourceLock);
+
+        if (HdbDllFindActiveSourceIndexNoLock(source) < 0)
+        {
+            HdbDllSetQueryError(query, "query source is not active");
+            return HDB_ERR_PARAM;
+        }
+        if (source->ownerQuery != query)
+        {
+            HdbDllSetQueryError(query, "query source belongs to another query");
+            return HDB_ERR_PARAM;
+        }
+        sourceId = source->sourceId;
+    }
+    if (sourceId < 0)
+    {
+        HdbDllSetQueryError(query, "query source id is invalid");
         return HDB_ERR_PARAM;
     }
-    if (source->ownerQuery != query)
-    {
-        HdbDllSetQueryError(query, "query source belongs to another query");
-        return HDB_ERR_PARAM;
-    }
-    if (query->ast.FindSourceIndex(source->sourceId) < 0)
+    if (query->ast.FindSourceIndex(sourceId) < 0)
     {
         HdbDllSetQueryError(query, "query source id is invalid");
         return HDB_ERR_PARAM;
     }
     if (outSourceId != NULL)
     {
-        *outSourceId = source->sourceId;
+        *outSourceId = sourceId;
     }
     return HDB_OK;
 }
