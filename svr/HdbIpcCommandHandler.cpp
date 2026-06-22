@@ -232,7 +232,7 @@ int CHdbIpcCommandHandler::HandleQueryExecute(const HdbIpcFrame& requestFrame,
         }
         if (field.type == HDB_IPC_FIELD_QUERY_AST)
         {
-            // 请求体只接受 QUERY_AST，SERVER 不信任 DLL 侧生成 SQL
+            // 请求体只接受 QUERY_AST
             if (field.length > HDB_IPC_MAX_QUERY_AST_BYTES)
             {
                 return BuildIpcErrorResponse(requestFrame.header.command,

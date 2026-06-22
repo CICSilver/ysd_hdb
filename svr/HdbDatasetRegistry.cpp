@@ -74,6 +74,7 @@ static HdbDatasetDef g_hdbDatasets[] =
     }
 };
 
+// 手写schema
 static HdbRelationDef g_hdbRelations[] =
 {
     // relation 名称用于字段路径解析，例如 alarm 到 point 到 device 到 name

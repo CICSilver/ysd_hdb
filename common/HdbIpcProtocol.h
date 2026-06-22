@@ -66,7 +66,7 @@ enum HdbIpcFieldType
     HDB_IPC_FIELD_LIMIT = 9, // 列表查询最大返回条数，int32
     HDB_IPC_FIELD_OFFSET = 10, // 列表查询起始偏移，int32
     HDB_IPC_FIELD_DATASET_NAME = 20, // 逻辑数据集名称，字符串
-    HDB_IPC_FIELD_QUERY_AST = 21, // 查询 AST 序列化内容，不是 SQL
+    HDB_IPC_FIELD_QUERY_AST = 21, // 查询 AST 序列化内容
     HDB_IPC_FIELD_RESULT_SCHEMA = 22, // 查询结果 schema，包含 outputName 和类型信息
     HDB_IPC_FIELD_RESULT_ROWS = 23, // 查询结果行数据
     HDB_IPC_FIELD_CURSOR_ID = 24, // SERVER 侧结果游标编号，int64

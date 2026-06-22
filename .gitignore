@@ -11,6 +11,8 @@
 /dll/Release
 /dll/x64
 /dll/ysd_hdb_dll
+/ysd_hdb_smoke_test/Debug
+/ysd_hdb_smoke_test/ysd_hdb_.f8430a0b
 /tools
 /test
 /doc

@@ -5,4 +5,5 @@
   </Configurations>
   <Project Path="dll/ysd_hdb_dll.vcxproj" Id="81ad00d7-aeb2-405d-a02c-edfb95d00b40" />
   <Project Path="svr/ysd_hdb_svr.vcxproj" Id="b8ab72cd-68ca-4e01-a087-015d66a528ed" />
+  <Project Path="ysd_hdb_smoke_test/ysd_hdb_smoke_test.vcxproj" Id="f8430a0b-c8bc-41ac-b660-3c3f1d025cce" />
 </Solution>

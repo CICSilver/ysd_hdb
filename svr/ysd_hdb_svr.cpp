@@ -116,15 +116,24 @@ static int RunSelfTest(int argc, char* argv[])
     return RunHdbSvrSelfTest(ReadSelfTestConnInfo(argc, argv));
 }
 
+static int RunUnitSelfTest()
+{
+    return RunHdbSvrUnitSelfTest();
+}
+
 int main(int argc, char* argv[])
 {
     const char* connInfo;
     CHdbPgAdapter adapter;
     int ret;
-
+    // svr侧单元测试
     if (argc > 1 && strcmp(argv[1], "--selftest") == 0)
     {
         return RunSelfTest(argc, argv);
+    }
+    if (argc > 1 && strcmp(argv[1], "--selftest-unit") == 0)
+    {
+        return RunUnitSelfTest();
     }
     connInfo = ReadDefaultConnInfo();
     printf("ysd_hdb_svr service mode\n");

@@ -13,6 +13,9 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="test">
+      <UniqueIdentifier>{61d3b767-cb56-4948-b34b-04f2a3c55324}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\common\HdbIpcProtocol.cpp">
@@ -28,9 +31,6 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="..\common\HdbQueryAstCodec.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="..\test\HdbSvrSelfTest.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="HdbDatasetRegistry.cpp">
@@ -66,6 +66,9 @@
     <ClCompile Include="ysd_hdb_svr.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="..\test\HdbSvrSelfTest.cpp">
+      <Filter>test</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\common\HdbCommon.h">
@@ -84,9 +87,6 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="..\common\HdbQueryAstCodec.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="..\test\HdbSvrSelfTest.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="HdbCommon.h">
@@ -124,6 +124,9 @@
     </ClInclude>
     <ClInclude Include="HdbShardRouter.h">
       <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="..\test\HdbSvrSelfTest.h">
+      <Filter>test</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
