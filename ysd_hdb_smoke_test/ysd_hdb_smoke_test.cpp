@@ -359,33 +359,114 @@ static int RunPingSmoke(HDB_SESSION session)
     return 0;
 }
 
+// 测试 Builder 链式值对象的本地边界
+static int RunBuilderApiSmoke(HDB_SESSION session)
+{
+    CHdbSource emptySource;
+    CHdbFieldRef emptyField;
+    HDB_RESULT result;
+    int ret;
+
+    PrintTestTitle("Builder 链式 API", "覆盖值对象 source 和 field 的本地边界检查");
+
+    {
+        CHdbQueryBuilder query(session);
+        CHdbSource joinedSource;
+
+        joinedSource = query.LeftJoin(emptySource, "point");
+        if (query.GetError() != HDB_ERR_PARAM || joinedSource.IsValid() != 0)
+        {
+            PrintFail("default source rejected");
+            printf("ret=%d joinedValid=%d\n", query.GetError(), joinedSource.IsValid());
+            return 1;
+        }
+    }
+
+    {
+        CHdbQueryBuilder query(session);
+
+        result = (HDB_RESULT)&ret;
+        query.Select(emptyField, "badField");
+        ret = query.Execute(&result);
+        if (ret != HDB_ERR_PARAM || result != NULL)
+        {
+            PrintFail("default field rejected");
+            printf("ret=%d result=%p\n", ret, (void*)result);
+            return 1;
+        }
+    }
+
+    {
+        CHdbQueryBuilder firstQuery(session);
+        CHdbQueryBuilder secondQuery(session);
+        CHdbSource alarmSource;
+
+        alarmSource = firstQuery.From("alarm");
+        if (firstQuery.GetError() != HDB_OK || alarmSource.IsValid() == 0)
+        {
+            PrintFail("builder source create");
+            printf("ret=%d sourceValid=%d\n", firstQuery.GetError(), alarmSource.IsValid());
+            return 1;
+        }
+        secondQuery.Select(alarmSource.Field("id"), "id");
+        if (secondQuery.GetError() != HDB_ERR_PARAM)
+        {
+            PrintFail("cross builder field rejected");
+            printf("ret=%d\n", secondQuery.GetError());
+            return 1;
+        }
+    }
+
+    {
+        CHdbQueryBuilder firstQuery(session);
+        CHdbQueryBuilder secondQuery(session);
+        CHdbSource alarmSource;
+        CHdbSource joinedSource;
+
+        alarmSource = firstQuery.From("alarm");
+        if (firstQuery.GetError() != HDB_OK || alarmSource.IsValid() == 0)
+        {
+            PrintFail("builder join source create");
+            printf("ret=%d sourceValid=%d\n", firstQuery.GetError(), alarmSource.IsValid());
+            return 1;
+        }
+        joinedSource = secondQuery.LeftJoin(alarmSource, "point");
+        if (secondQuery.GetError() != HDB_ERR_PARAM || joinedSource.IsValid() != 0)
+        {
+            PrintFail("cross builder source rejected");
+            printf("ret=%d joinedValid=%d\n", secondQuery.GetError(), joinedSource.IsValid());
+            return 1;
+        }
+    }
+
+    PrintOk("Builder 链式 API 检查通过");
+    return 0;
+}
+
 // 测试日分片查询和两级关联
 static int RunHistoryQuerySmoke(HDB_SESSION session)
 {
     CHdbQueryBuilder query(session);
-    HDB_SOURCE alarmSource;
-    HDB_SOURCE pointSource;
-    HDB_SOURCE deviceSource;
+    CHdbSource alarmSource;
+    CHdbSource pointSource;
+    CHdbSource deviceSource;
     HDB_RESULT result;
     int ret;
 
     PrintTestTitle("历史查询", "覆盖日分片查询、两级关联、NULL 和类型读取");
-    alarmSource = NULL;
-    pointSource = NULL;
-    deviceSource = NULL;
     result = NULL;
 
+    alarmSource = query.From("alarm");
+    pointSource = query.LeftJoin(alarmSource, "point");
+    deviceSource = query.LeftJoin(pointSource, "device");
     query
-        .From("alarm", alarmSource)
-        .LeftJoin(alarmSource, "point", pointSource)
-        .LeftJoin(pointSource, "device", deviceSource)
-        .Select(alarmSource, "id", "id")
-        .Select(alarmSource, "level", "level")
-        .Select(alarmSource, "occur_time", "time")
-        .Select(pointSource, "name", "pointName")
-        .Select(deviceSource, "name", "deviceName")
-        .WhereInt32(alarmSource, "level", HDB_OP_GE, 2)
-        .OrderBy(alarmSource, "occur_time", HDB_ORDER_DESC)
+        .Select(alarmSource.Field("id"), "id")
+        .Select(alarmSource.Field("level"), "level")
+        .Select(alarmSource.Field("occur_time"), "time")
+        .Select(pointSource.Field("name"), "pointName")
+        .Select(deviceSource.Field("name"), "deviceName")
+        .WhereInt32(alarmSource.Field("level"), HDB_OP_GE, 2)
+        .OrderBy(alarmSource.Field("occur_time"), HDB_ORDER_DESC)
         .TimeRange(MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 14, 0, 0, 0, 0))
         .Limit(10, 0);
 
@@ -423,21 +504,20 @@ static int RunHistoryQuerySmoke(HDB_SESSION session)
 static int RunTimestampWhereSmoke(HDB_SESSION session)
 {
     CHdbQueryBuilder query(session);
-    HDB_SOURCE alarmSource;
+    CHdbSource alarmSource;
     HDB_RESULT result;
     int ret;
 
     PrintTestTitle("时间条件", "覆盖时间字段 where 条件和分片过滤");
-    alarmSource = NULL;
     result = NULL;
 
+    alarmSource = query.From("alarm");
     query
-        .From("alarm", alarmSource)
         .TimeRange(MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 14, 0, 0, 0, 0))
-        .Select(alarmSource, "id", "id")
-        .Select(alarmSource, "occur_time", "time")
-        .WhereInt64(alarmSource, "occur_time", HDB_OP_GE, MakeLocalTimeMs(2026, 6, 13, 0, 0, 0, 0))
-        .OrderBy(alarmSource, "occur_time", HDB_ORDER_DESC)
+        .Select(alarmSource.Field("id"), "id")
+        .Select(alarmSource.Field("occur_time"), "time")
+        .WhereInt64(alarmSource.Field("occur_time"), HDB_OP_GE, MakeLocalTimeMs(2026, 6, 13, 0, 0, 0, 0))
+        .OrderBy(alarmSource.Field("occur_time"), HDB_ORDER_DESC)
         .Limit(10, 0);
 
     ret = query.GetError();
@@ -466,20 +546,19 @@ static int RunTimestampWhereSmoke(HDB_SESSION session)
 static int RunPointQuerySmoke(HDB_SESSION session)
 {
     CHdbQueryBuilder query(session);
-    HDB_SOURCE pointSource;
+    CHdbSource pointSource;
     HDB_RESULT result;
     int ret;
 
     PrintTestTitle("固定表查询", "覆盖固定表 dataset 查询和 LIKE 条件");
-    pointSource = NULL;
     result = NULL;
 
+    pointSource = query.From("point");
     query
-        .From("point", pointSource)
-        .Select(pointSource, "id", "id")
-        .Select(pointSource, "name", "pointName")
-        .WhereStringLike(pointSource, "name", "point%")
-        .OrderBy(pointSource, "name", HDB_ORDER_ASC)
+        .Select(pointSource.Field("id"), "id")
+        .Select(pointSource.Field("name"), "pointName")
+        .WhereStringLike(pointSource.Field("name"), "point%")
+        .OrderBy(pointSource.Field("name"), HDB_ORDER_ASC)
         .Limit(3, 0);
 
     ret = query.GetError();
@@ -588,12 +667,16 @@ int main(int argc, char* argv[])
     printf("ysd_hdb smoke test\n");
     printf("conninfo: %s\n", connInfo);
 
-    // 打开 DLL 会话并探测 SERVER
+    // 打开 DLL 会话并先检查 Builder 本地边界
     ret = HdbOpen(NULL, &session);
     if (ret != HDB_OK)
     {
         PrintFail("HdbOpen failed");
         printf("ret=%d\n", ret);
+        goto done;
+    }
+    if (RunBuilderApiSmoke(session) != 0)
+    {
         goto done;
     }
     if (RunPingSmoke(session) != 0)

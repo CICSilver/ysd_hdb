@@ -90,24 +90,22 @@ Field：
 
 普通调用方包含 `dll/ysd_hdb.h`，并使用 `CHdbQueryBuilder` 构造查询。`dll/ysd_hdb_c.h` 是低层 C ABI 头文件，用于 DLL 导出、跨语言绑定和底层边界测试；业务代码不需要直接调用低层查询函数。
 
-`dll/HdbQueryBuilder.h` 是 header-only 包装层，只转发到底层 C ABI，不导出 C++ ABI，不维护独立查询模型，不抛异常。
+`dll/HdbQueryBuilder.h` 是 header-only 包装层，只转发到底层 C ABI，不导出 C++ ABI，不维护独立查询模型，不抛异常。`CHdbSource` 和 `CHdbFieldRef` 只是 Builder 层的轻量值对象，不拥有底层句柄，也不跨 DLL ABI 边界传递。
 
 ```cpp
-HDB_SOURCE alarm = NULL;
-HDB_SOURCE point = NULL;
-HDB_SOURCE device = NULL;
 HDB_RESULT result = NULL;
 CHdbQueryBuilder query(session);
 
+CHdbSource alarm = query.From("alarm");
+CHdbSource point = query.LeftJoin(alarm, "point");
+CHdbSource device = query.LeftJoin(point, "device");
+
 query
-    .From("alarm", alarm)
-    .LeftJoin(alarm, "point", point)
-    .LeftJoin(point, "device", device)
-    .Select(alarm, "id", "id")
-    .Select(point, "name", "pointName")
-    .Select(device, "name", "deviceName")
-    .WhereInt32(alarm, "level", HDB_OP_GE, 2)
-    .OrderBy(alarm, "occur_time", HDB_ORDER_DESC)
+    .Select(alarm.Field("id"), "id")
+    .Select(point.Field("name"), "pointName")
+    .Select(device.Field("name"), "deviceName")
+    .WhereInt32(alarm.Field("level"), HDB_OP_GE, 2)
+    .OrderBy(alarm.Field("occur_time"), HDB_ORDER_DESC)
     .TimeRange(beginMs, endMs)
     .Limit(10, 0);
 
@@ -122,7 +120,7 @@ alarm
   LEFT JOIN point.device -> device
 ```
 
-Builder 记录第一次失败的返回码；第一次失败后后续链式方法不再修改 query。析构时释放仍持有的 `HDB_QUERY`。
+Builder 记录第一次失败的返回码；第一次失败后后续链式方法不再修改 query。析构时释放仍持有的 `HDB_QUERY`。`CHdbSource` 和 `CHdbFieldRef` 只在创建它们的 Builder 生命周期内有效，不能混用到其他 Builder。
 
 ## AST version 2
 
@@ -192,31 +190,7 @@ sourceId 2, field name -> s2.name
 
 ## 错误码
 
-公共错误码定义在 `common/HdbCommon.h`。
-
-```cpp
-HDB_OK = 0
-HDB_ERR_PARAM = -1
-HDB_ERR_NOT_CONNECTED = -2
-HDB_ERR_DB_CONNECT = -3
-HDB_ERR_DB_EXEC = -4
-HDB_ERR_NO_RECORD = -5
-HDB_ERR_MODEL_DEF = -6
-HDB_ERR_BUFFER = -7
-HDB_ERR_DATASET_DEF = -8
-HDB_ERR_DATASET_NOT_FOUND = -9
-HDB_ERR_FIELD_NOT_FOUND = -10
-HDB_ERR_FIELD_REF = -11
-HDB_ERR_ASSOCIATION_NOT_FOUND = -12
-HDB_ERR_QUERY_NEED_TIME_RANGE = -13
-HDB_ERR_QUERY_RANGE = -14
-HDB_ERR_SHARD_DEF = -15
-HDB_ERR_SHARD_NOT_FOUND = -16
-HDB_ERR_NOT_IMPLEMENTED = -17
-HDB_ERR_NULL_VALUE = -18
-HDB_ERR_TYPE_MISMATCH = -19
-HDB_ERR_INTERNAL = -20
-```
+公共错误码以 `common/HdbCommon.h` 为准。README 不再复制错误码清单，避免文档和头文件定义脱节。
 
 ## 编译兼容
 

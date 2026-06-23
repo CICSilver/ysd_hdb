@@ -25,10 +25,10 @@
 #endif
 #endif
 
-typedef struct HdbSessionTag* HDB_SESSION;     // DLL 到 SERVER 的 IPC 会话
-typedef struct HdbQueryTag* HDB_QUERY;         // 逻辑查询句柄
-typedef struct HdbQuerySourceTag* HDB_SOURCE;  // query 内显式 source 句柄
-typedef struct HdbResultTag* HDB_RESULT;       // 查询结果句柄
+typedef struct HdbSessionTag* HDB_SESSION;     // DLL 到 SERVER 的 IPC 会话, 由 HdbClose 释放
+typedef struct HdbQueryTag* HDB_QUERY;         // 逻辑查询句柄, 由 HdbQueryFree 释放
+typedef struct HdbQuerySourceTag* HDB_SOURCE;  // query 内显式 source 句柄, 随 HDB_QUERY 释放
+typedef struct HdbResultTag* HDB_RESULT;       // 查询结果句柄, 由 HdbResultFree 释放
 
 // 同一个 HDB_QUERY、HDB_SOURCE 或 HDB_RESULT 按单线程使用
 // DLL 内部 active source 表已加锁，避免不同 query 注册 source 时互相破坏
