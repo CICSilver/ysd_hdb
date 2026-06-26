@@ -5,7 +5,7 @@
 
 #include <string>
 
-// Association 是可供显式 JOIN 使用的命名关联，不暗中决定 JOIN 类型
+// Association 是可供显式 JOIN 使用的命名关联
 struct HdbAssociationDef
 {
     const char* ownerDataset;     // 拥有关联的起始数据集

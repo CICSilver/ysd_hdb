@@ -13,6 +13,11 @@
 /dll/ysd_hdb_dll
 /ysd_hdb_smoke_test/Debug
 /ysd_hdb_smoke_test/ysd_hdb_.f8430a0b
+/ysd_hdb_meta_codegen/Debug
+/ysd_hdb_meta_codegen/Release
+/ysd_hdb_meta_codegen/x64
+/ysd_hdb_meta_codegen/ysd_hdb_.*
 /tools
 /test
 /doc
+METADATA_CODEGEN_TODO.md

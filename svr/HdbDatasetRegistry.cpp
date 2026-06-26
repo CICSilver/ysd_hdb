@@ -89,7 +89,7 @@ CHdbDatasetRegistry::CHdbDatasetRegistry()
 const HdbDatasetDef* CHdbDatasetRegistry::FindDataset(const char* datasetName) const
 {
     int i;
-
+    
     if (datasetName == NULL)
     {
         return NULL;
