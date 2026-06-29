@@ -57,6 +57,19 @@ static int HdbQueryIsValidJoinType(int joinType)
     return joinType == HDB_JOIN_INNER || joinType == HDB_JOIN_LEFT;
 }
 
+static int HdbQueryIsValidStatementType(int statementType)
+{
+    return statementType == HDB_QST_SELECT ||
+        statementType == HDB_QST_INSERT ||
+        statementType == HDB_QST_UPDATE ||
+        statementType == HDB_QST_DELETE;
+}
+
+static int HdbQueryIsValidConditionLogic(int logic)
+{
+    return logic == HDB_QCL_AND || logic == HDB_QCL_OR;
+}
+
 CHdbQueryAst::CHdbQueryAst()
 {
     Clear();
@@ -64,15 +77,29 @@ CHdbQueryAst::CHdbQueryAst()
 
 void CHdbQueryAst::Clear()
 {
+    statementType = HDB_QST_SELECT;
     sources.clear();
     hasTimeRange = 0;
     beginMs = 0;
     endMs = 0;
     selects.clear();
     wheres.clear();
+    conditions.clear();
+    whereRootNodeId = -1;
     orders.clear();
+    sets.clear();
     limit = 0;
     offset = 0;
+}
+
+int CHdbQueryAst::SetStatementType(int typeValue)
+{
+    if (!HdbQueryIsValidStatementType(typeValue))
+    {
+        return -1;
+    }
+    statementType = typeValue;
+    return 0;
 }
 
 int CHdbQueryAst::AddRootSource(const char* datasetName, int* outSourceId)
@@ -229,6 +256,33 @@ int CHdbQueryAst::AddWhereString(int sourceId, const char* fieldName, int op, co
     return AddWhereText(sourceId, fieldName, op, HDB_QVT_STRING, value);
 }
 
+int CHdbQueryAst::AddSetInt32(int sourceId, const char* fieldName, int value)
+{
+    char buffer[32];
+    HDB_QUERY_SNPRINTF(buffer, sizeof(buffer), "%d", value);
+    buffer[sizeof(buffer) - 1] = '\0';
+    return AddSetText(sourceId, fieldName, HDB_QVT_INT32, buffer);
+}
+
+int CHdbQueryAst::AddSetInt64(int sourceId, const char* fieldName, HdbQueryInt64 value)
+{
+    return AddSetText(sourceId, fieldName, HDB_QVT_INT64, HdbQueryInt64ToText(value));
+}
+
+int CHdbQueryAst::AddSetDouble(int sourceId, const char* fieldName, double value)
+{
+    return AddSetText(sourceId, fieldName, HDB_QVT_DOUBLE, HdbQueryDoubleToText(value));
+}
+
+int CHdbQueryAst::AddSetString(int sourceId, const char* fieldName, const char* value)
+{
+    if (value == NULL)
+    {
+        return -1;
+    }
+    return AddSetText(sourceId, fieldName, HDB_QVT_STRING, value);
+}
+
 int CHdbQueryAst::AddOrder(int sourceId, const char* fieldName, int orderType)
 {
     HdbQueryOrderItem item;
@@ -239,6 +293,185 @@ int CHdbQueryAst::AddOrder(int sourceId, const char* fieldName, int orderType)
     }
     item.orderType = orderType;
     orders.push_back(item);
+    return 0;
+}
+
+int CHdbQueryAst::AddConditionCompare(int sourceId,
+    const char* fieldName,
+    int op,
+    int valueType,
+    const char* valueText,
+    int* outNodeId)
+{
+    HdbQueryConditionItem item;
+
+    if (outNodeId != NULL)
+    {
+        *outNodeId = -1;
+    }
+    if (valueText == NULL || AssignFieldRef(item.field, sourceId, fieldName) != 0)
+    {
+        return -1;
+    }
+    item.nodeId = (int)conditions.size();
+    item.conditionType = HDB_QCT_COMPARE;
+    item.op = op;
+    item.valueType = valueType;
+    item.valueText = valueText;
+    item.secondValueText.clear();
+    item.values.clear();
+    item.logic = 0;
+    item.childNodeIds.clear();
+    conditions.push_back(item);
+    if (outNodeId != NULL)
+    {
+        *outNodeId = item.nodeId;
+    }
+    return 0;
+}
+
+int CHdbQueryAst::AddConditionNull(int sourceId, const char* fieldName, int isNotNull, int* outNodeId)
+{
+    HdbQueryConditionItem item;
+
+    if (outNodeId != NULL)
+    {
+        *outNodeId = -1;
+    }
+    if (AssignFieldRef(item.field, sourceId, fieldName) != 0)
+    {
+        return -1;
+    }
+    item.nodeId = (int)conditions.size();
+    item.conditionType = HDB_QCT_NULL;
+    item.op = isNotNull ? 1 : 0;
+    item.valueType = 0;
+    item.valueText.clear();
+    item.secondValueText.clear();
+    item.values.clear();
+    item.logic = 0;
+    item.childNodeIds.clear();
+    conditions.push_back(item);
+    if (outNodeId != NULL)
+    {
+        *outNodeId = item.nodeId;
+    }
+    return 0;
+}
+
+int CHdbQueryAst::AddConditionBetween(int sourceId,
+    const char* fieldName,
+    int valueType,
+    const char* beginText,
+    const char* endText,
+    int* outNodeId)
+{
+    HdbQueryConditionItem item;
+
+    if (outNodeId != NULL)
+    {
+        *outNodeId = -1;
+    }
+    if (beginText == NULL || endText == NULL || AssignFieldRef(item.field, sourceId, fieldName) != 0)
+    {
+        return -1;
+    }
+    item.nodeId = (int)conditions.size();
+    item.conditionType = HDB_QCT_BETWEEN;
+    item.op = 0;
+    item.valueType = valueType;
+    item.valueText = beginText;
+    item.secondValueText = endText;
+    item.values.clear();
+    item.logic = 0;
+    item.childNodeIds.clear();
+    conditions.push_back(item);
+    if (outNodeId != NULL)
+    {
+        *outNodeId = item.nodeId;
+    }
+    return 0;
+}
+
+int CHdbQueryAst::AddConditionIn(int sourceId,
+    const char* fieldName,
+    int valueType,
+    const std::vector<std::string>& values,
+    int* outNodeId)
+{
+    HdbQueryConditionItem item;
+
+    if (outNodeId != NULL)
+    {
+        *outNodeId = -1;
+    }
+    if (values.empty() || AssignFieldRef(item.field, sourceId, fieldName) != 0)
+    {
+        return -1;
+    }
+    item.nodeId = (int)conditions.size();
+    item.conditionType = HDB_QCT_IN;
+    item.op = 0;
+    item.valueType = valueType;
+    item.valueText.clear();
+    item.secondValueText.clear();
+    item.values = values;
+    item.logic = 0;
+    item.childNodeIds.clear();
+    conditions.push_back(item);
+    if (outNodeId != NULL)
+    {
+        *outNodeId = item.nodeId;
+    }
+    return 0;
+}
+
+int CHdbQueryAst::AddConditionGroup(int logic,
+    const std::vector<int>& childNodeIds,
+    int* outNodeId)
+{
+    HdbQueryConditionItem item;
+    size_t i;
+
+    if (outNodeId != NULL)
+    {
+        *outNodeId = -1;
+    }
+    if (!HdbQueryIsValidConditionLogic(logic) || childNodeIds.size() < 2)
+    {
+        return -1;
+    }
+    for (i = 0; i < childNodeIds.size(); ++i)
+    {
+        if (FindConditionIndex(childNodeIds[i]) < 0)
+        {
+            return -1;
+        }
+    }
+    item.nodeId = (int)conditions.size();
+    item.conditionType = HDB_QCT_GROUP;
+    item.op = 0;
+    item.valueType = 0;
+    item.valueText.clear();
+    item.secondValueText.clear();
+    item.values.clear();
+    item.logic = logic;
+    item.childNodeIds = childNodeIds;
+    conditions.push_back(item);
+    if (outNodeId != NULL)
+    {
+        *outNodeId = item.nodeId;
+    }
+    return 0;
+}
+
+int CHdbQueryAst::SetWhereRoot(int nodeId)
+{
+    if (FindConditionIndex(nodeId) < 0)
+    {
+        return -1;
+    }
+    whereRootNodeId = nodeId;
     return 0;
 }
 
@@ -286,6 +519,20 @@ int CHdbQueryAst::FindSourceIndex(int sourceId) const
     return -1;
 }
 
+int CHdbQueryAst::FindConditionIndex(int nodeId) const
+{
+    size_t i;
+
+    for (i = 0; i < conditions.size(); ++i)
+    {
+        if (conditions[i].nodeId == nodeId)
+        {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 int CHdbQueryAst::Serialize(std::string& text) const
 {
     CHdbQueryAstCodec codec;
@@ -314,6 +561,23 @@ int CHdbQueryAst::AddWhereText(int sourceId,
     item.valueType = valueType;
     item.valueText = valueText;
     wheres.push_back(item);
+    return 0;
+}
+
+int CHdbQueryAst::AddSetText(int sourceId,
+    const char* fieldName,
+    int valueType,
+    const std::string& valueText)
+{
+    HdbQuerySetItem item;
+
+    if (AssignFieldRef(item.field, sourceId, fieldName) != 0)
+    {
+        return -1;
+    }
+    item.valueType = valueType;
+    item.valueText = valueText;
+    sets.push_back(item);
     return 0;
 }
 

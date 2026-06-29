@@ -70,6 +70,8 @@ HDB_API int HDB_CALL HdbBatchInsertRows(HDB_SESSION session,
 HDB_API int HDB_CALL HdbQueryCreate(HDB_SESSION session, HDB_QUERY* outQuery);
 // 释放未执行或已执行的查询句柄，同时释放 query 创建的所有 HDB_SOURCE
 HDB_API int HDB_CALL HdbQueryFree(HDB_QUERY query);
+// 设置 AST 语句类型，statementType 取 HdbQueryStatementType
+HDB_API int HDB_CALL HdbQuerySetStatementType(HDB_QUERY query, int statementType);
 // 设置查询 ROOT source，一个 query 中只允许成功调用一次
 HDB_API int HDB_CALL HdbQueryFrom(HDB_QUERY query,
     const char* datasetName,
@@ -98,12 +100,53 @@ HDB_API int HDB_CALL HdbQueryWhereInt64(HDB_QUERY query, HDB_SOURCE source, cons
 HDB_API int HDB_CALL HdbQueryWhereDouble(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, int op, double value);
 HDB_API int HDB_CALL HdbQueryWhereStringEq(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, const char* value);
 HDB_API int HDB_CALL HdbQueryWhereStringLike(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, const char* pattern);
+// 条件树接口用于 DSL 组合 AND/OR、BETWEEN、IN、NULL，值文本不是 SQL 片段
+HDB_API int HDB_CALL HdbQueryConditionValue(HDB_QUERY query,
+    HDB_SOURCE source,
+    const char* fieldName,
+    int op,
+    int valueType,
+    const char* valueText,
+    int* outConditionId);
+HDB_API int HDB_CALL HdbQueryConditionNull(HDB_QUERY query,
+    HDB_SOURCE source,
+    const char* fieldName,
+    int isNotNull,
+    int* outConditionId);
+HDB_API int HDB_CALL HdbQueryConditionBetween(HDB_QUERY query,
+    HDB_SOURCE source,
+    const char* fieldName,
+    int valueType,
+    const char* beginText,
+    const char* endText,
+    int* outConditionId);
+HDB_API int HDB_CALL HdbQueryConditionIn(HDB_QUERY query,
+    HDB_SOURCE source,
+    const char* fieldName,
+    int valueType,
+    const char* const* valueTexts,
+    int valueCount,
+    int* outConditionId);
+HDB_API int HDB_CALL HdbQueryConditionGroup(HDB_QUERY query,
+    int logic,
+    const int* childConditionIds,
+    int childCount,
+    int* outConditionId);
+HDB_API int HDB_CALL HdbQueryWhereCondition(HDB_QUERY query, int conditionId);
+// INSERT/UPDATE 的 set 项，值文本由 SERVER 按字段类型二次校验
+HDB_API int HDB_CALL HdbQuerySetValue(HDB_QUERY query,
+    HDB_SOURCE source,
+    const char* fieldName,
+    int valueType,
+    const char* valueText);
 // 排序字段同样必须属于传入 source，不接收 SQL order 片段
 HDB_API int HDB_CALL HdbQueryOrderBy(HDB_QUERY query, HDB_SOURCE source, const char* fieldName, int orderType);
 // limit 为 0 时使用 SERVER 默认上限，offset 保持非负
 HDB_API int HDB_CALL HdbQueryLimit(HDB_QUERY query, int limit, int offset);
 // 执行成功后 outResult 交给调用方，后续用 HdbResultFree 释放
 HDB_API int HDB_CALL HdbQueryExecute(HDB_QUERY query, HDB_RESULT* outResult);
+// 执行 DML AST，成功后返回影响行数
+HDB_API int HDB_CALL HdbQueryExecuteAffected(HDB_QUERY query, int* affectedRows);
 
 // 释放查询结果句柄，释放后所有列名和单元格缓存都失效
 HDB_API int HDB_CALL HdbResultFree(HDB_RESULT result);

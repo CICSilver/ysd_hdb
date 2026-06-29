@@ -138,6 +138,10 @@ int CHdbIpcCommandHandler::DispatchRequest(const HdbIpcFrame& requestFrame,
     {
         return HandleQueryExecute(requestFrame, responseFrame);
     }
+    if (requestFrame.header.command == HDB_IPC_CMD_QUERY_EXECUTE_AFFECTED)
+    {
+        return HandleQueryExecuteAffected(requestFrame, responseFrame);
+    }
     return BuildIpcErrorResponse(requestFrame.header.command,
         requestFrame.header.sequence,
         HDB_ERR_NOT_IMPLEMENTED,
@@ -322,6 +326,111 @@ int CHdbIpcCommandHandler::HandleQueryExecute(const HdbIpcFrame& requestFrame,
             requestFrame.header.sequence,
             HDB_ERR_BUFFER,
             "append result rows failed",
+            responseFrame);
+    }
+    return BuildIpcResponse(requestFrame.header.command,
+        requestFrame.header.sequence,
+        HDB_OK,
+        body,
+        responseFrame);
+}
+
+int CHdbIpcCommandHandler::HandleQueryExecuteAffected(const HdbIpcFrame& requestFrame,
+    std::vector<unsigned char>& responseFrame)
+{
+    CHdbIpcFieldReader reader;
+    HdbIpcField field;
+    CHdbQueryExecutor executor(m_context == NULL ? NULL : m_context->adapter,
+        m_context == NULL ? NULL : &m_context->registry);
+    CHdbQueryAst ast;
+    std::vector<unsigned char> body;
+    std::string astText;
+    int affectedRows;
+    int hasField;
+    int hasQueryAst;
+    int ret;
+
+    hasQueryAst = 0;
+    affectedRows = 0;
+    ret = reader.Reset(requestFrame.body, requestFrame.bodyLength);
+    if (ret != HDB_IPC_OK)
+    {
+        return BuildIpcErrorResponse(requestFrame.header.command,
+            requestFrame.header.sequence,
+            HDB_ERR_BUFFER,
+            "invalid request body",
+            responseFrame);
+    }
+    while (1)
+    {
+        ret = reader.Next(field, &hasField);
+        if (ret != HDB_IPC_OK)
+        {
+            return BuildIpcErrorResponse(requestFrame.header.command,
+                requestFrame.header.sequence,
+                HDB_ERR_BUFFER,
+                "invalid request field",
+                responseFrame);
+        }
+        if (hasField == 0)
+        {
+            break;
+        }
+        if (field.type == HDB_IPC_FIELD_QUERY_AST)
+        {
+            if (field.length > HDB_IPC_MAX_QUERY_AST_BYTES)
+            {
+                return BuildIpcErrorResponse(requestFrame.header.command,
+                    requestFrame.header.sequence,
+                    HDB_ERR_BUFFER,
+                    "query ast exceeds ipc limit",
+                    responseFrame);
+            }
+            ret = HdbIpcReadString(field, astText);
+            if (ret != HDB_IPC_OK)
+            {
+                return BuildIpcErrorResponse(requestFrame.header.command,
+                    requestFrame.header.sequence,
+                    HDB_ERR_BUFFER,
+                    "invalid query ast",
+                    responseFrame);
+            }
+            hasQueryAst = 1;
+        }
+    }
+    if (hasQueryAst == 0)
+    {
+        return BuildIpcErrorResponse(requestFrame.header.command,
+            requestFrame.header.sequence,
+            HDB_ERR_PARAM,
+            "query ast is missing",
+            responseFrame);
+    }
+    ret = ast.Deserialize(astText.c_str());
+    if (ret != HDB_OK)
+    {
+        return BuildIpcErrorResponse(requestFrame.header.command,
+            requestFrame.header.sequence,
+            ret,
+            "query ast deserialize failed",
+            responseFrame);
+    }
+    ret = executor.ExecuteAffected(ast, &affectedRows);
+    if (ret != HDB_OK)
+    {
+        return BuildIpcErrorResponse(requestFrame.header.command,
+            requestFrame.header.sequence,
+            ret,
+            executor.GetLastError(),
+            responseFrame);
+    }
+    ret = HdbIpcAppendInt32(body, HDB_IPC_FIELD_AFFECTED_ROWS, affectedRows);
+    if (ret != HDB_IPC_OK)
+    {
+        return BuildIpcErrorResponse(requestFrame.header.command,
+            requestFrame.header.sequence,
+            HDB_ERR_BUFFER,
+            "append affected rows failed",
             responseFrame);
     }
     return BuildIpcResponse(requestFrame.header.command,

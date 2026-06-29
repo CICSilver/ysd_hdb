@@ -103,6 +103,7 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
     std::vector<ResolvedSource> sources;
     std::vector<ResolvedField> selectFields;
     std::vector<ResolvedField> whereFields;
+    std::vector<ResolvedField> conditionFields;
     std::vector<ResolvedField> orderFields;
     std::vector<std::string> rootColumns;
     std::string sourceSql;
@@ -121,6 +122,11 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
     if (m_registry == NULL)
     {
         SetLastError("dataset registry is NULL");
+        return HDB_ERR_PARAM;
+    }
+    if (ast.statementType != HDB_QST_SELECT)
+    {
+        SetLastError("statement is not select");
         return HDB_ERR_PARAM;
     }
     if (ast.selects.empty())
@@ -159,12 +165,17 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
     {
         return ret;
     }
+    ret = ResolveConditionFields(ast, sources, conditionFields);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
     ret = ResolveOrderFields(ast, sources, orderFields);
     if (ret != HDB_OK)
     {
         return ret;
     }
-    ret = CollectRootColumns(ast, sources, selectFields, whereFields, orderFields, rootColumns);
+    ret = CollectRootColumns(ast, sources, selectFields, whereFields, conditionFields, orderFields, rootColumns);
     if (ret != HDB_OK)
     {
         return ret;
@@ -179,7 +190,7 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
     {
         return ret;
     }
-    ret = BuildWhere(ast, *rootSource, whereFields, outQuery, whereSql);
+    ret = BuildWhere(ast, *rootSource, sources, whereFields, outQuery, whereSql);
     if (ret != HDB_OK)
     {
         return ret;
@@ -230,6 +241,63 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
 
     outQuery.sql = sql.str();
     return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::BuildExecute(const CHdbQueryAst& ast, HdbBuiltQuery& outQuery)
+{
+    std::vector<ResolvedSource> sources;
+    std::vector<ResolvedField> setFields;
+    const ResolvedSource* rootSource;
+    int ret;
+
+    outQuery.Clear();
+    if (m_registry == NULL)
+    {
+        SetLastError("dataset registry is NULL");
+        return HDB_ERR_PARAM;
+    }
+    if (ast.statementType != HDB_QST_INSERT &&
+        ast.statementType != HDB_QST_UPDATE &&
+        ast.statementType != HDB_QST_DELETE)
+    {
+        SetLastError("statement is not executable dml");
+        return HDB_ERR_PARAM;
+    }
+    if (!ast.selects.empty() || !ast.orders.empty())
+    {
+        SetLastError("dml statement cannot contain select or order");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    ret = ResolveSources(ast, sources);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (sources.size() != 1)
+    {
+        SetLastError("dml statement does not support join source");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    rootSource = FindResolvedSource(sources, 0);
+    if (rootSource == NULL)
+    {
+        SetLastError("root source is missing");
+        return HDB_ERR_PARAM;
+    }
+    ret = ResolveSetFields(ast, sources, setFields);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (ast.statementType == HDB_QST_INSERT)
+    {
+        return BuildInsert(ast, *rootSource, setFields, outQuery);
+    }
+    if (ast.statementType == HDB_QST_UPDATE)
+    {
+        return BuildUpdate(ast, *rootSource, setFields, outQuery);
+    }
+    return BuildDelete(ast, *rootSource, outQuery);
 }
 
 const char* CHdbQuerySqlBuilder::GetLastError() const
@@ -475,6 +543,50 @@ int CHdbQuerySqlBuilder::ResolveOrderFields(const CHdbQueryAst& ast,
     return HDB_OK;
 }
 
+int CHdbQuerySqlBuilder::ResolveSetFields(const CHdbQueryAst& ast,
+    const std::vector<ResolvedSource>& sources,
+    std::vector<ResolvedField>& fields)
+{
+    size_t i;
+
+    fields.clear();
+    for (i = 0; i < ast.sets.size(); ++i)
+    {
+        ResolvedField field;
+        int ret = ResolveFieldRef(sources, ast.sets[i].field, field);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        fields.push_back(field);
+    }
+    return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::ResolveConditionFields(const CHdbQueryAst& ast,
+    const std::vector<ResolvedSource>& sources,
+    std::vector<ResolvedField>& fields)
+{
+    size_t i;
+
+    fields.clear();
+    for (i = 0; i < ast.conditions.size(); ++i)
+    {
+        ResolvedField field;
+
+        if (ast.conditions[i].conditionType == HDB_QCT_GROUP)
+        {
+            continue;
+        }
+        if (ResolveFieldRef(sources, ast.conditions[i].field, field) != HDB_OK)
+        {
+            return HDB_ERR_FIELD_REF;
+        }
+        fields.push_back(field);
+    }
+    return HDB_OK;
+}
+
 int CHdbQuerySqlBuilder::ResolveFieldRef(const std::vector<ResolvedSource>& sources,
     const HdbQueryFieldRef& fieldRef,
     ResolvedField& outField)
@@ -510,6 +622,7 @@ int CHdbQuerySqlBuilder::CollectRootColumns(const CHdbQueryAst& ast,
     const std::vector<ResolvedSource>& sources,
     const std::vector<ResolvedField>& selectFields,
     const std::vector<ResolvedField>& whereFields,
+    const std::vector<ResolvedField>& conditionFields,
     const std::vector<ResolvedField>& orderFields,
     std::vector<std::string>& rootColumns)
 {
@@ -547,6 +660,13 @@ int CHdbQuerySqlBuilder::CollectRootColumns(const CHdbQueryAst& ast,
         if (whereFields[i].sourceId == 0)
         {
             AddRootColumn(rootColumns, whereFields[i].field->columnName);
+        }
+    }
+    for (i = 0; i < conditionFields.size(); ++i)
+    {
+        if (conditionFields[i].sourceId == 0)
+        {
+            AddRootColumn(rootColumns, conditionFields[i].field->columnName);
         }
     }
     for (i = 0; i < orderFields.size(); ++i)
@@ -748,6 +868,7 @@ int CHdbQuerySqlBuilder::BuildJoins(const std::vector<ResolvedSource>& sources, 
 
 int CHdbQuerySqlBuilder::BuildWhere(const CHdbQueryAst& ast,
     const ResolvedSource& rootSource,
+    const std::vector<ResolvedSource>& sources,
     const std::vector<ResolvedField>& whereFields,
     HdbBuiltQuery& outQuery,
     std::string& outSql)
@@ -758,7 +879,9 @@ int CHdbQuerySqlBuilder::BuildWhere(const CHdbQueryAst& ast,
 
     outSql.clear();
     first = 1;
-    if (rootSource.dataset->shard.shardType == HDB_SHARD_DB_PARTITION && ast.hasTimeRange)
+    if ((rootSource.dataset->shard.shardType == HDB_SHARD_DB_PARTITION ||
+        (rootSource.dataset->shard.shardType == HDB_SHARD_DAY && ast.statementType != HDB_QST_SELECT)) &&
+        ast.hasTimeRange)
     {
         const HdbFieldDef* routeField = m_registry->FindField(*rootSource.dataset,
             rootSource.dataset->shard.routeFieldName);
@@ -784,7 +907,9 @@ int CHdbQuerySqlBuilder::BuildWhere(const CHdbQueryAst& ast,
         int paramIndex;
         int formatRet;
 
-        if (rootSource.dataset->shard.shardType == HDB_SHARD_DAY && whereFields[i].sourceId == 0)
+        if (rootSource.dataset->shard.shardType == HDB_SHARD_DAY &&
+            ast.statementType == HDB_QST_SELECT &&
+            whereFields[i].sourceId == 0)
         {
             // 已下推到日分片子查询的 root 条件不再重复拼一次
             continue;
@@ -811,6 +936,214 @@ int CHdbQuerySqlBuilder::BuildWhere(const CHdbQueryAst& ast,
         }
         sql << expr << " " << opText << " " << Placeholder(paramIndex);
         first = 0;
+    }
+    if (ast.whereRootNodeId >= 0)
+    {
+        std::string conditionSql;
+        int ret;
+
+        ret = BuildConditionSql(ast, sources, ast.whereRootNodeId, outQuery, conditionSql);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        if (!conditionSql.empty())
+        {
+            if (!first)
+            {
+                sql << " and ";
+            }
+            sql << conditionSql;
+            first = 0;
+        }
+    }
+    outSql = sql.str();
+    return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::BuildConditionSql(const CHdbQueryAst& ast,
+    const std::vector<ResolvedSource>& sources,
+    int nodeId,
+    HdbBuiltQuery& outQuery,
+    std::string& outSql)
+{
+    const HdbQueryConditionItem* condition;
+    std::ostringstream sql;
+    size_t i;
+    int conditionIndex;
+
+    outSql.clear();
+    conditionIndex = ast.FindConditionIndex(nodeId);
+    if (conditionIndex < 0)
+    {
+        SetLastError("condition node is invalid");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    condition = &ast.conditions[conditionIndex];
+    if (condition->conditionType == HDB_QCT_COMPARE)
+    {
+        ResolvedField field;
+        std::string expr;
+        std::string value;
+        const char* opText;
+        int paramIndex;
+        int ret;
+
+        ret = ResolveFieldRef(sources, condition->field, field);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        opText = OpToSql(condition->op);
+        if (opText == NULL)
+        {
+            SetLastError("unsupported compare op");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        if (condition->op == HDB_OP_LIKE && field.field->type != HDB_FT_CHAR_ARRAY)
+        {
+            SetLastError("like operator requires string field");
+            return HDB_ERR_TYPE_MISMATCH;
+        }
+        ret = AppendFieldExpr(field, expr);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = FormatValueForField(field, condition->valueType, condition->valueText, value);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        paramIndex = AddParam(outQuery, value);
+        sql << expr << " " << opText << " " << Placeholder(paramIndex);
+    }
+    else if (condition->conditionType == HDB_QCT_NULL)
+    {
+        ResolvedField field;
+        std::string expr;
+        int ret;
+
+        ret = ResolveFieldRef(sources, condition->field, field);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = AppendFieldExpr(field, expr);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        sql << expr << (condition->op != 0 ? " is not null" : " is null");
+    }
+    else if (condition->conditionType == HDB_QCT_BETWEEN)
+    {
+        ResolvedField field;
+        std::string expr;
+        std::string beginValue;
+        std::string endValue;
+        int beginParam;
+        int endParam;
+        int ret;
+
+        ret = ResolveFieldRef(sources, condition->field, field);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = AppendFieldExpr(field, expr);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = FormatValueForField(field, condition->valueType, condition->valueText, beginValue);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = FormatValueForField(field, condition->valueType, condition->secondValueText, endValue);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        beginParam = AddParam(outQuery, beginValue);
+        endParam = AddParam(outQuery, endValue);
+        sql << expr << " between " << Placeholder(beginParam) << " and " << Placeholder(endParam);
+    }
+    else if (condition->conditionType == HDB_QCT_IN)
+    {
+        ResolvedField field;
+        std::string expr;
+        int ret;
+
+        if (condition->values.empty())
+        {
+            SetLastError("in condition has no value");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        ret = ResolveFieldRef(sources, condition->field, field);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = AppendFieldExpr(field, expr);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        sql << expr << " in (";
+        for (i = 0; i < condition->values.size(); ++i)
+        {
+            std::string value;
+            int paramIndex;
+
+            ret = FormatValueForField(field, condition->valueType, condition->values[i], value);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            paramIndex = AddParam(outQuery, value);
+            if (i > 0)
+            {
+                sql << ", ";
+            }
+            sql << Placeholder(paramIndex);
+        }
+        sql << ")";
+    }
+    else if (condition->conditionType == HDB_QCT_GROUP)
+    {
+        const char* logicText;
+
+        if (condition->childNodeIds.size() < 2)
+        {
+            SetLastError("condition group has too few children");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        logicText = condition->logic == HDB_QCL_OR ? " or " : " and ";
+        sql << "(";
+        for (i = 0; i < condition->childNodeIds.size(); ++i)
+        {
+            std::string childSql;
+            int ret;
+
+            ret = BuildConditionSql(ast, sources, condition->childNodeIds[i], outQuery, childSql);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            if (i > 0)
+            {
+                sql << logicText;
+            }
+            sql << childSql;
+        }
+        sql << ")";
+    }
+    else
+    {
+        SetLastError("unsupported condition type");
+        return HDB_ERR_QUERY_RANGE;
     }
     outSql = sql.str();
     return HDB_OK;
@@ -839,6 +1172,279 @@ int CHdbQuerySqlBuilder::BuildOrder(const CHdbQueryAst& ast,
     }
     outSql = sql.str();
     return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::BuildInsert(const CHdbQueryAst& ast,
+    const ResolvedSource& rootSource,
+    const std::vector<ResolvedField>& setFields,
+    HdbBuiltQuery& outQuery)
+{
+    std::string tableName;
+    std::ostringstream sql;
+    size_t i;
+    int ret;
+
+    if (setFields.empty() || ast.sets.size() != setFields.size())
+    {
+        SetLastError("insert statement has no set fields");
+        return HDB_ERR_PARAM;
+    }
+    if (!ast.wheres.empty() || ast.whereRootNodeId >= 0)
+    {
+        SetLastError("insert statement cannot contain where");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    ret = ResolveDmlTableName(ast, rootSource, setFields, tableName);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    for (i = 0; i < setFields.size(); ++i)
+    {
+        size_t j;
+
+        if (setFields[i].sourceId != 0)
+        {
+            SetLastError("insert set field must belong to root source");
+            return HDB_ERR_FIELD_REF;
+        }
+        if ((setFields[i].field->flags & HDB_FIELD_INSERT) == 0)
+        {
+            SetLastError("field is not insertable");
+            return HDB_ERR_FIELD_REF;
+        }
+        for (j = i + 1; j < setFields.size(); ++j)
+        {
+            if (strcmp(setFields[i].field->fieldName, setFields[j].field->fieldName) == 0)
+            {
+                SetLastError("duplicate insert set field");
+                return HDB_ERR_QUERY_RANGE;
+            }
+        }
+    }
+    sql << "insert into " << tableName << " (";
+    for (i = 0; i < setFields.size(); ++i)
+    {
+        if (i > 0)
+        {
+            sql << ", ";
+        }
+        sql << setFields[i].field->columnName;
+    }
+    sql << ") values (";
+    for (i = 0; i < setFields.size(); ++i)
+    {
+        std::string value;
+        int paramIndex;
+
+        ret = FormatValueForField(setFields[i], ast.sets[i].valueType, ast.sets[i].valueText, value);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        paramIndex = AddParam(outQuery, value);
+        if (i > 0)
+        {
+            sql << ", ";
+        }
+        sql << Placeholder(paramIndex);
+    }
+    sql << ")";
+    outQuery.sql = sql.str();
+    return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::BuildUpdate(const CHdbQueryAst& ast,
+    const ResolvedSource& rootSource,
+    const std::vector<ResolvedField>& setFields,
+    HdbBuiltQuery& outQuery)
+{
+    std::vector<ResolvedSource> sources;
+    std::string tableName;
+    std::string whereSql;
+    std::ostringstream sql;
+    size_t i;
+    int ret;
+
+    if (setFields.empty() || ast.sets.size() != setFields.size())
+    {
+        SetLastError("update statement has no set fields");
+        return HDB_ERR_PARAM;
+    }
+    sources.push_back(rootSource);
+    ret = ResolveDmlTableName(ast, rootSource, setFields, tableName);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    for (i = 0; i < setFields.size(); ++i)
+    {
+        size_t j;
+
+        if (setFields[i].sourceId != 0)
+        {
+            SetLastError("update set field must belong to root source");
+            return HDB_ERR_FIELD_REF;
+        }
+        if ((setFields[i].field->flags & HDB_FIELD_UPDATE) == 0)
+        {
+            SetLastError("field is not updateable");
+            return HDB_ERR_FIELD_REF;
+        }
+        for (j = i + 1; j < setFields.size(); ++j)
+        {
+            if (strcmp(setFields[i].field->fieldName, setFields[j].field->fieldName) == 0)
+            {
+                SetLastError("duplicate update set field");
+                return HDB_ERR_QUERY_RANGE;
+            }
+        }
+    }
+    sql << "update " << tableName << " " << rootSource.sqlAlias << " set ";
+    for (i = 0; i < setFields.size(); ++i)
+    {
+        std::string value;
+        int paramIndex;
+
+        ret = FormatValueForField(setFields[i], ast.sets[i].valueType, ast.sets[i].valueText, value);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        paramIndex = AddParam(outQuery, value);
+        if (i > 0)
+        {
+            sql << ", ";
+        }
+        sql << setFields[i].field->columnName << " = " << Placeholder(paramIndex);
+    }
+    ret = BuildWhere(ast, rootSource, sources, std::vector<ResolvedField>(), outQuery, whereSql);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (!whereSql.empty())
+    {
+        sql << " where " << whereSql;
+    }
+    outQuery.sql = sql.str();
+    return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::BuildDelete(const CHdbQueryAst& ast,
+    const ResolvedSource& rootSource,
+    HdbBuiltQuery& outQuery)
+{
+    std::vector<ResolvedSource> sources;
+    std::vector<ResolvedField> setFields;
+    std::string tableName;
+    std::string whereSql;
+    std::ostringstream sql;
+    int ret;
+
+    if (!ast.sets.empty())
+    {
+        SetLastError("delete statement cannot contain set fields");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    sources.push_back(rootSource);
+    ret = ResolveDmlTableName(ast, rootSource, setFields, tableName);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    sql << "delete from " << tableName << " " << rootSource.sqlAlias;
+    ret = BuildWhere(ast, rootSource, sources, std::vector<ResolvedField>(), outQuery, whereSql);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (!whereSql.empty())
+    {
+        sql << " where " << whereSql;
+    }
+    outQuery.sql = sql.str();
+    return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::ResolveDmlTableName(const CHdbQueryAst& ast,
+    const ResolvedSource& rootSource,
+    const std::vector<ResolvedField>& setFields,
+    std::string& outTableName)
+{
+    size_t i;
+
+    outTableName.clear();
+    if (rootSource.dataset == NULL)
+    {
+        SetLastError("dml root dataset is missing");
+        return HDB_ERR_PARAM;
+    }
+    if (rootSource.dataset->shard.shardType == HDB_SHARD_NONE ||
+        rootSource.dataset->shard.shardType == HDB_SHARD_DB_PARTITION)
+    {
+        outTableName = rootSource.dataset->shard.tableName;
+        return HDB_OK;
+    }
+    if (rootSource.dataset->shard.shardType != HDB_SHARD_DAY)
+    {
+        SetLastError("unsupported dml shard type");
+        return HDB_ERR_SHARD_DEF;
+    }
+    if (ast.statementType == HDB_QST_INSERT)
+    {
+        for (i = 0; i < setFields.size() && i < ast.sets.size(); ++i)
+        {
+            HdbInt64 routeTime;
+
+            if (strcmp(setFields[i].field->fieldName, rootSource.dataset->shard.routeFieldName) != 0)
+            {
+                continue;
+            }
+            if (setFields[i].field->type != HDB_FT_TIMESTAMP_MS && setFields[i].field->type != HDB_FT_INT64)
+            {
+                SetLastError("route field is not int64 timestamp");
+                return HDB_ERR_SHARD_DEF;
+            }
+            if (ast.sets[i].valueType != HDB_QVT_INT64 ||
+                HdbBuilderParseInt64Strict(ast.sets[i].valueText, &routeTime) != HDB_OK)
+            {
+                SetLastError("insert route value is invalid");
+                return HDB_ERR_TYPE_MISMATCH;
+            }
+            if (m_router.BuildDayTableName(*rootSource.dataset, routeTime, outTableName) != HDB_OK)
+            {
+                SetLastError(m_router.GetLastError());
+                return HDB_ERR_SHARD_DEF;
+            }
+            return HDB_OK;
+        }
+        SetLastError("insert route field is missing");
+        return HDB_ERR_QUERY_NEED_TIME_RANGE;
+    }
+    if (!ast.hasTimeRange)
+    {
+        SetLastError("day sharded dml requires time range");
+        return HDB_ERR_QUERY_NEED_TIME_RANGE;
+    }
+    {
+        std::vector<std::string> tableNames;
+        int ret;
+
+        ret = m_router.ResolveQueryTables(*rootSource.dataset, ast.beginMs, ast.endMs, tableNames);
+        if (ret != HDB_OK)
+        {
+            SetLastError(m_router.GetLastError());
+            return ret;
+        }
+        if (tableNames.size() != 1)
+        {
+            SetLastError("day sharded update/delete only supports one day table");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        outTableName = tableNames[0];
+        return HDB_OK;
+    }
 }
 
 int CHdbQuerySqlBuilder::AppendFieldExpr(const ResolvedField& field, std::string& outExpr)
@@ -957,6 +1563,108 @@ int CHdbQuerySqlBuilder::FormatWhereParamValue(const ResolvedField& field,
         return HDB_OK;
     default:
         SetLastError("unsupported where field type");
+        return HDB_ERR_FIELD_REF;
+    }
+}
+
+int CHdbQuerySqlBuilder::FormatValueForField(const ResolvedField& field,
+    int valueType,
+    const std::string& valueText,
+    std::string& outValue)
+{
+    int intValue;
+    HdbInt64 int64Value;
+
+    outValue.clear();
+    if (field.field == NULL)
+    {
+        SetLastError("value field is NULL");
+        return HDB_ERR_FIELD_REF;
+    }
+    switch (field.field->type)
+    {
+    case HDB_FT_INT32:
+        if (valueType != HDB_QVT_INT32)
+        {
+            SetLastError("int32 field requires int32 value");
+            return HDB_ERR_TYPE_MISMATCH;
+        }
+        if (HdbBuilderParseInt32Strict(valueText, &intValue) != HDB_OK)
+        {
+            SetLastError("int32 value is invalid");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        outValue = valueText;
+        return HDB_OK;
+    case HDB_FT_SMALLINT:
+        if (valueType != HDB_QVT_INT32)
+        {
+            SetLastError("smallint field requires int32 value");
+            return HDB_ERR_TYPE_MISMATCH;
+        }
+        if (HdbBuilderParseInt32Strict(valueText, &intValue) != HDB_OK ||
+            intValue < -32768 ||
+            intValue > 32767)
+        {
+            SetLastError("smallint value is out of range");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        outValue = valueText;
+        return HDB_OK;
+    case HDB_FT_INT64:
+        if (valueType != HDB_QVT_INT64)
+        {
+            SetLastError("int64 field requires int64 value");
+            return HDB_ERR_TYPE_MISMATCH;
+        }
+        if (HdbBuilderParseInt64Strict(valueText, &int64Value) != HDB_OK)
+        {
+            SetLastError("int64 value is invalid");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        outValue = valueText;
+        return HDB_OK;
+    case HDB_FT_DOUBLE:
+        if (valueType != HDB_QVT_DOUBLE)
+        {
+            SetLastError("double field requires double value");
+            return HDB_ERR_TYPE_MISMATCH;
+        }
+        if (HdbBuilderParseDoubleStrict(valueText) != HDB_OK)
+        {
+            SetLastError("double value is invalid");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        outValue = valueText;
+        return HDB_OK;
+    case HDB_FT_CHAR_ARRAY:
+        if (valueType != HDB_QVT_STRING)
+        {
+            SetLastError("string field requires string value");
+            return HDB_ERR_TYPE_MISMATCH;
+        }
+        outValue = valueText;
+        return HDB_OK;
+    case HDB_FT_TIMESTAMP_MS:
+        if (valueType != HDB_QVT_INT64)
+        {
+            SetLastError("timestamp_ms field requires int64 epoch ms value");
+            return HDB_ERR_TYPE_MISMATCH;
+        }
+        if (HdbBuilderParseInt64Strict(valueText, &int64Value) != HDB_OK)
+        {
+            SetLastError("timestamp_ms value is invalid");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        outValue = FormatTimestampMs(int64Value);
+        if (outValue.empty())
+        {
+            SetLastError("timestamp_ms value conversion failed");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        return HDB_OK;
+    default:
+        SetLastError("unsupported value field type");
         return HDB_ERR_FIELD_REF;
     }
 }

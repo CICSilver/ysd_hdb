@@ -26,6 +26,7 @@ public:
     explicit CHdbQuerySqlBuilder(const CHdbDatasetRegistry* registry);
 
     int BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& outQuery);
+    int BuildExecute(const CHdbQueryAst& ast, HdbBuiltQuery& outQuery);
     const char* GetLastError() const;
 
 private:
@@ -59,6 +60,12 @@ private:
     int ResolveOrderFields(const CHdbQueryAst& ast,
         const std::vector<ResolvedSource>& sources,
         std::vector<ResolvedField>& fields);
+    int ResolveSetFields(const CHdbQueryAst& ast,
+        const std::vector<ResolvedSource>& sources,
+        std::vector<ResolvedField>& fields);
+    int ResolveConditionFields(const CHdbQueryAst& ast,
+        const std::vector<ResolvedSource>& sources,
+        std::vector<ResolvedField>& fields);
     int ResolveFieldRef(const std::vector<ResolvedSource>& sources,
         const HdbQueryFieldRef& fieldRef,
         ResolvedField& outField);
@@ -66,6 +73,7 @@ private:
         const std::vector<ResolvedSource>& sources,
         const std::vector<ResolvedField>& selectFields,
         const std::vector<ResolvedField>& whereFields,
+        const std::vector<ResolvedField>& conditionFields,
         const std::vector<ResolvedField>& orderFields,
         std::vector<std::string>& rootColumns);
     int AddRootColumn(std::vector<std::string>& rootColumns, const char* columnName);
@@ -79,16 +87,41 @@ private:
     int BuildJoins(const std::vector<ResolvedSource>& sources, std::string& outSql);
     int BuildWhere(const CHdbQueryAst& ast,
         const ResolvedSource& rootSource,
+        const std::vector<ResolvedSource>& sources,
         const std::vector<ResolvedField>& whereFields,
+        HdbBuiltQuery& outQuery,
+        std::string& outSql);
+    int BuildConditionSql(const CHdbQueryAst& ast,
+        const std::vector<ResolvedSource>& sources,
+        int nodeId,
         HdbBuiltQuery& outQuery,
         std::string& outSql);
     int BuildOrder(const CHdbQueryAst& ast,
         const std::vector<ResolvedField>& orderFields,
         std::string& outSql);
+    int BuildInsert(const CHdbQueryAst& ast,
+        const ResolvedSource& rootSource,
+        const std::vector<ResolvedField>& setFields,
+        HdbBuiltQuery& outQuery);
+    int BuildUpdate(const CHdbQueryAst& ast,
+        const ResolvedSource& rootSource,
+        const std::vector<ResolvedField>& setFields,
+        HdbBuiltQuery& outQuery);
+    int BuildDelete(const CHdbQueryAst& ast,
+        const ResolvedSource& rootSource,
+        HdbBuiltQuery& outQuery);
+    int ResolveDmlTableName(const CHdbQueryAst& ast,
+        const ResolvedSource& rootSource,
+        const std::vector<ResolvedField>& setFields,
+        std::string& outTableName);
     int AppendFieldExpr(const ResolvedField& field, std::string& outExpr);
     // where 参数值在这里按字段类型转成数据库文本
     int FormatWhereParamValue(const ResolvedField& field,
         const HdbQueryWhereItem& whereItem,
+        std::string& outValue);
+    int FormatValueForField(const ResolvedField& field,
+        int valueType,
+        const std::string& valueText,
         std::string& outValue);
     int AddParam(HdbBuiltQuery& query, const std::string& value);
     std::string Placeholder(int index) const;

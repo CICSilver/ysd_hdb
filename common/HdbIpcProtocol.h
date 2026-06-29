@@ -48,7 +48,8 @@ enum HdbIpcCommand
     HDB_IPC_CMD_DATASET_BATCH_INSERT = 151, // 按逻辑数据集批量插入数据
     HDB_IPC_CMD_QUERY_EXECUTE = 200, // 执行逻辑查询描述，不传递 SQL
     HDB_IPC_CMD_RESULT_FETCH = 201, // 当前预留，分页读取 SERVER 保存的查询结果
-    HDB_IPC_CMD_RESULT_CLOSE = 202 // 当前预留，关闭 SERVER 保存的查询结果
+    HDB_IPC_CMD_RESULT_CLOSE = 202, // 当前预留，关闭 SERVER 保存的查询结果
+    HDB_IPC_CMD_QUERY_EXECUTE_AFFECTED = 203 // 执行 DML AST 并返回影响行数
 };
 
 // body 里的 TLV 字段类型

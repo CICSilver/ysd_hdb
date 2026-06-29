@@ -968,6 +968,11 @@ static std::string HdbDslTableTypeName(const HdbCodegenDataset& dataset)
     return "CHdbGenerated" + HdbToPascalName(dataset.datasetName) + "Table";
 }
 
+static std::string HdbDslRowTypeName(const HdbCodegenDataset& dataset)
+{
+    return HdbToPascalName(dataset.datasetName) + "Row";
+}
+
 static std::string HdbDslTableVarName(const HdbCodegenDataset& dataset)
 {
     return HdbToUpperIdentifier(dataset.datasetName);
@@ -976,6 +981,19 @@ static std::string HdbDslTableVarName(const HdbCodegenDataset& dataset)
 static std::string HdbDslFieldMemberName(const HdbCodegenColumn& column)
 {
     return HdbToUpperIdentifier(column.columnName);
+}
+
+static std::string HdbDslRowFieldType(const HdbCodegenColumn& column)
+{
+    if (column.fieldType == "HDB_FT_CHAR_ARRAY")
+    {
+        return "std::string";
+    }
+    if (column.fieldType == "HDB_FT_SMALLINT")
+    {
+        return "int";
+    }
+    return column.cppType;
 }
 
 static std::string HdbQuote(const std::string& text)
@@ -1191,6 +1209,32 @@ static void HdbAppendGeneratedDslHeader(const std::vector<HdbCodegenDataset>& da
         out << "};\n\n";
         out << "static const " << HdbDslTableTypeName(dataset) << " "
             << HdbDslTableVarName(dataset) << ";\n\n";
+        out << "struct " << HdbDslRowTypeName(dataset) << "\n";
+        out << "{\n";
+        for (j = 0; j < (int)dataset.columns.size(); ++j)
+        {
+            const HdbCodegenColumn& column = dataset.columns[j];
+
+            out << "    " << HdbDslRowFieldType(column) << " " << column.columnName << ";\n";
+        }
+        out << "\n";
+        out << "    int FillFrom(CHdbDslResult& result)\n";
+        out << "    {\n";
+        out << "        int ret;\n\n";
+        for (j = 0; j < (int)dataset.columns.size(); ++j)
+        {
+            const HdbCodegenColumn& column = dataset.columns[j];
+
+            out << "        ret = result.Get(" << HdbDslTableVarName(dataset) << "."
+                << HdbDslFieldMemberName(column) << ", " << column.columnName << ");\n";
+            out << "        if (ret != HDB_OK)\n";
+            out << "        {\n";
+            out << "            return ret;\n";
+            out << "        }\n";
+        }
+        out << "        return HDB_OK;\n";
+        out << "    }\n";
+        out << "};\n\n";
     }
     out << "}\n\n";
     out << "#endif\n";

@@ -15,6 +15,7 @@ public:
 
     // result 列顺序和 outputTypes 顺序保持一致
     int Execute(const CHdbQueryAst& ast, CHdbQueryResult& result);
+    int ExecuteAffected(const CHdbQueryAst& ast, int* affectedRows);
     const char* GetLastError() const;
     const std::vector<int>& GetLastOutputTypes() const;
 

@@ -62,12 +62,20 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
     }
     if (ast.selects.size() > HDB_QUERY_MAX_SELECT_COUNT ||
         ast.wheres.size() > HDB_QUERY_MAX_WHERE_COUNT ||
+        ast.conditions.size() > HDB_QUERY_MAX_CONDITION_COUNT ||
+        ast.sets.size() > HDB_QUERY_MAX_SET_COUNT ||
         ast.orders.size() > HDB_QUERY_MAX_ORDER_COUNT)
     {
         SetLastError("query ast item count exceeds limit");
         return HDB_ERR_QUERY_RANGE;
     }
+    ret = ValidateStatementType(ast.statementType);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
     out << "ast_version=" << HDB_QUERY_AST_VERSION << "\n";
+    out << "statement=" << ast.statementType << "\n";
     for (index = 0; index < ast.sources.size(); ++index)
     {
         const HdbQuerySourceItem& source = ast.sources[index];
@@ -168,6 +176,33 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
             << ast.selects[index].field.fieldName << "|"
             << ast.selects[index].outputName << "\n";
     }
+    for (index = 0; index < ast.sets.size(); ++index)
+    {
+        ret = ValidateNameText(ast.sets[index].field.fieldName, "set field name");
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = ValidateValueType(ast.sets[index].valueType);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = ValidateValueText(ast.sets[index].valueText, "set value");
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        if (ast.FindSourceIndex(ast.sets[index].field.sourceId) < 0)
+        {
+            SetLastError("set source is invalid");
+            return HDB_ERR_FIELD_REF;
+        }
+        out << "set=" << ast.sets[index].field.sourceId << "|"
+            << ast.sets[index].field.fieldName << "|"
+            << ast.sets[index].valueType << "|"
+            << ast.sets[index].valueText << "\n";
+    }
     for (index = 0; index < ast.wheres.size(); ++index)
     {
         ret = ValidateNameText(ast.wheres[index].field.fieldName, "where field name");
@@ -185,7 +220,7 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
         {
             return ret;
         }
-        ret = ValidateText(ast.wheres[index].valueText, "where value");
+        ret = ValidateValueText(ast.wheres[index].valueText, "where value");
         if (ret != HDB_OK)
         {
             return ret;
@@ -200,6 +235,158 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
             << ast.wheres[index].op << "|"
             << ast.wheres[index].valueType << "|"
             << ast.wheres[index].valueText << "\n";
+    }
+    for (index = 0; index < ast.conditions.size(); ++index)
+    {
+        const HdbQueryConditionItem& condition = ast.conditions[index];
+        size_t childIndex;
+
+        if (condition.nodeId != (int)index)
+        {
+            SetLastError("condition node id is invalid");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        ret = ValidateConditionType(condition.conditionType);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        if (condition.conditionType == HDB_QCT_COMPARE)
+        {
+            ret = ValidateNameText(condition.field.fieldName, "condition field name");
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            ret = ValidateCompareOp(condition.op);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            ret = ValidateValueType(condition.valueType);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            ret = ValidateValueText(condition.valueText, "condition value");
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            out << "condition=compare|" << condition.nodeId << "|"
+                << condition.field.sourceId << "|"
+                << condition.field.fieldName << "|"
+                << condition.op << "|"
+                << condition.valueType << "|"
+                << condition.valueText << "\n";
+        }
+        else if (condition.conditionType == HDB_QCT_NULL)
+        {
+            ret = ValidateNameText(condition.field.fieldName, "condition field name");
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            out << "condition=null|" << condition.nodeId << "|"
+                << condition.field.sourceId << "|"
+                << condition.field.fieldName << "|"
+                << condition.op << "\n";
+        }
+        else if (condition.conditionType == HDB_QCT_BETWEEN)
+        {
+            ret = ValidateNameText(condition.field.fieldName, "condition field name");
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            ret = ValidateValueType(condition.valueType);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            ret = ValidateValueText(condition.valueText, "condition begin value");
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            ret = ValidateValueText(condition.secondValueText, "condition end value");
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            out << "condition=between|" << condition.nodeId << "|"
+                << condition.field.sourceId << "|"
+                << condition.field.fieldName << "|"
+                << condition.valueType << "|"
+                << condition.valueText << "|"
+                << condition.secondValueText << "\n";
+        }
+        else if (condition.conditionType == HDB_QCT_IN)
+        {
+            if (condition.values.empty() || condition.values.size() > HDB_QUERY_MAX_IN_VALUE_COUNT)
+            {
+                SetLastError("invalid in value count");
+                return HDB_ERR_QUERY_RANGE;
+            }
+            ret = ValidateNameText(condition.field.fieldName, "condition field name");
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            ret = ValidateValueType(condition.valueType);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            out << "condition=in|" << condition.nodeId << "|"
+                << condition.field.sourceId << "|"
+                << condition.field.fieldName << "|"
+                << condition.valueType;
+            for (childIndex = 0; childIndex < condition.values.size(); ++childIndex)
+            {
+                ret = ValidateValueText(condition.values[childIndex], "condition in value");
+                if (ret != HDB_OK)
+                {
+                    return ret;
+                }
+                out << "|" << condition.values[childIndex];
+            }
+            out << "\n";
+        }
+        else if (condition.conditionType == HDB_QCT_GROUP)
+        {
+            ret = ValidateConditionLogic(condition.logic);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            if (condition.childNodeIds.size() < 2)
+            {
+                SetLastError("condition group has too few children");
+                return HDB_ERR_QUERY_RANGE;
+            }
+            out << "condition=group|" << condition.nodeId << "|"
+                << condition.logic;
+            for (childIndex = 0; childIndex < condition.childNodeIds.size(); ++childIndex)
+            {
+                if (ast.FindConditionIndex(condition.childNodeIds[childIndex]) < 0)
+                {
+                    SetLastError("condition group child is invalid");
+                    return HDB_ERR_QUERY_RANGE;
+                }
+                out << "|" << condition.childNodeIds[childIndex];
+            }
+            out << "\n";
+        }
+    }
+    if (ast.whereRootNodeId >= 0)
+    {
+        if (ast.FindConditionIndex(ast.whereRootNodeId) < 0)
+        {
+            SetLastError("where root condition is invalid");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        out << "where_root=" << ast.whereRootNodeId << "\n";
     }
     for (index = 0; index < ast.orders.size(); ++index)
     {
@@ -281,7 +468,7 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
         {
             int version;
             if (ParseInt32Strict(line.substr(12), &version) != HDB_OK ||
-                (version != HDB_QUERY_AST_VERSION && version != 2))
+                (version != HDB_QUERY_AST_VERSION && version != 3 && version != 2))
             {
                 SetLastError("unsupported query ast version");
                 return HDB_ERR_PARAM;
@@ -292,6 +479,18 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
         {
             SetLastError("query ast version is missing");
             return HDB_ERR_PARAM;
+        }
+        else if (line.find("statement=") == 0)
+        {
+            int statementType;
+
+            if (ParseInt32Strict(line.substr(10), &statementType) != HDB_OK ||
+                ValidateStatementType(statementType) != HDB_OK ||
+                outAst.SetStatementType(statementType) != 0)
+            {
+                SetLastError("invalid statement type");
+                return HDB_ERR_QUERY_RANGE;
+            }
         }
         else if (line.find("source=") == 0)
         {
@@ -390,6 +589,56 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
                 return HDB_ERR_PARAM;
             }
         }
+        else if (line.find("set=") == 0)
+        {
+            std::vector<std::string> fields;
+            int sourceId;
+            int valueType;
+
+            if (SplitFields(line.substr(4), fields) != HDB_OK ||
+                fields.size() != 4 ||
+                outAst.sets.size() >= HDB_QUERY_MAX_SET_COUNT ||
+                ParseInt32Strict(fields[0], &sourceId) != HDB_OK ||
+                ValidateNameText(fields[1], "set field name") != HDB_OK ||
+                ParseInt32Strict(fields[2], &valueType) != HDB_OK ||
+                ValidateValueType(valueType) != HDB_OK ||
+                ValidateValueText(fields[3], "set value") != HDB_OK)
+            {
+                SetLastError("invalid set item");
+                return HDB_ERR_QUERY_RANGE;
+            }
+            if (valueType == HDB_QVT_INT32)
+            {
+                int value;
+                if (ParseInt32Strict(fields[3], &value) != HDB_OK ||
+                    outAst.AddSetInt32(sourceId, fields[1].c_str(), value) != 0)
+                {
+                    return HDB_ERR_QUERY_RANGE;
+                }
+            }
+            else if (valueType == HDB_QVT_INT64)
+            {
+                HdbQueryInt64 value;
+                if (ParseInt64Strict(fields[3], &value) != HDB_OK ||
+                    outAst.AddSetInt64(sourceId, fields[1].c_str(), value) != 0)
+                {
+                    return HDB_ERR_QUERY_RANGE;
+                }
+            }
+            else if (valueType == HDB_QVT_DOUBLE)
+            {
+                double value;
+                if (ParseDoubleStrict(fields[3], &value) != HDB_OK ||
+                    outAst.AddSetDouble(sourceId, fields[1].c_str(), value) != 0)
+                {
+                    return HDB_ERR_QUERY_RANGE;
+                }
+            }
+            else if (outAst.AddSetString(sourceId, fields[1].c_str(), fields[3].c_str()) != 0)
+            {
+                return HDB_ERR_QUERY_RANGE;
+            }
+        }
         else if (line.find("where=") == 0)
         {
             std::vector<std::string> fields;
@@ -402,7 +651,7 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
                 outAst.wheres.size() >= HDB_QUERY_MAX_WHERE_COUNT ||
                 ParseInt32Strict(fields[0], &sourceId) != HDB_OK ||
                 ValidateNameText(fields[1], "where field name") != HDB_OK ||
-                ValidateText(fields[4], "where value") != HDB_OK ||
+                ValidateValueText(fields[4], "where value") != HDB_OK ||
                 ParseInt32Strict(fields[2], &op) != HDB_OK ||
                 ParseInt32Strict(fields[3], &valueType) != HDB_OK ||
                 ValidateCompareOp(op) != HDB_OK ||
@@ -441,6 +690,169 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
             else if (outAst.AddWhereString(sourceId, fields[1].c_str(), op, fields[4].c_str()) != 0)
             {
                 return HDB_ERR_PARAM;
+            }
+        }
+        else if (line.find("condition=") == 0)
+        {
+            std::vector<std::string> fields;
+            int nodeId;
+            int sourceId;
+            int op;
+            int valueType;
+            int addedNodeId;
+
+            if (SplitFields(line.substr(10), fields) != HDB_OK || fields.empty())
+            {
+                SetLastError("invalid condition item");
+                return HDB_ERR_QUERY_RANGE;
+            }
+            if (fields[0] == "compare")
+            {
+                if (fields.size() != 7 ||
+                    outAst.conditions.size() >= HDB_QUERY_MAX_CONDITION_COUNT ||
+                    ParseInt32Strict(fields[1], &nodeId) != HDB_OK ||
+                    ParseInt32Strict(fields[2], &sourceId) != HDB_OK ||
+                    ValidateNameText(fields[3], "condition field name") != HDB_OK ||
+                    ParseInt32Strict(fields[4], &op) != HDB_OK ||
+                    ParseInt32Strict(fields[5], &valueType) != HDB_OK ||
+                    ValidateCompareOp(op) != HDB_OK ||
+                    ValidateValueType(valueType) != HDB_OK ||
+                    ValidateValueText(fields[6], "condition value") != HDB_OK ||
+                    outAst.AddConditionCompare(sourceId,
+                        fields[3].c_str(),
+                        op,
+                        valueType,
+                        fields[6].c_str(),
+                        &addedNodeId) != 0 ||
+                    addedNodeId != nodeId)
+                {
+                    SetLastError("invalid compare condition");
+                    return HDB_ERR_QUERY_RANGE;
+                }
+            }
+            else if (fields[0] == "null")
+            {
+                if (fields.size() != 5 ||
+                    outAst.conditions.size() >= HDB_QUERY_MAX_CONDITION_COUNT ||
+                    ParseInt32Strict(fields[1], &nodeId) != HDB_OK ||
+                    ParseInt32Strict(fields[2], &sourceId) != HDB_OK ||
+                    ValidateNameText(fields[3], "condition field name") != HDB_OK ||
+                    ParseInt32Strict(fields[4], &op) != HDB_OK ||
+                    (op != 0 && op != 1) ||
+                    outAst.AddConditionNull(sourceId, fields[3].c_str(), op, &addedNodeId) != 0 ||
+                    addedNodeId != nodeId)
+                {
+                    SetLastError("invalid null condition");
+                    return HDB_ERR_QUERY_RANGE;
+                }
+            }
+            else if (fields[0] == "between")
+            {
+                if (fields.size() != 7 ||
+                    outAst.conditions.size() >= HDB_QUERY_MAX_CONDITION_COUNT ||
+                    ParseInt32Strict(fields[1], &nodeId) != HDB_OK ||
+                    ParseInt32Strict(fields[2], &sourceId) != HDB_OK ||
+                    ValidateNameText(fields[3], "condition field name") != HDB_OK ||
+                    ParseInt32Strict(fields[4], &valueType) != HDB_OK ||
+                    ValidateValueType(valueType) != HDB_OK ||
+                    ValidateValueText(fields[5], "condition begin value") != HDB_OK ||
+                    ValidateValueText(fields[6], "condition end value") != HDB_OK ||
+                    outAst.AddConditionBetween(sourceId,
+                        fields[3].c_str(),
+                        valueType,
+                        fields[5].c_str(),
+                        fields[6].c_str(),
+                        &addedNodeId) != 0 ||
+                    addedNodeId != nodeId)
+                {
+                    SetLastError("invalid between condition");
+                    return HDB_ERR_QUERY_RANGE;
+                }
+            }
+            else if (fields[0] == "in")
+            {
+                std::vector<std::string> values;
+                size_t valueIndex;
+
+                if (fields.size() < 6 ||
+                    fields.size() - 5 > HDB_QUERY_MAX_IN_VALUE_COUNT ||
+                    outAst.conditions.size() >= HDB_QUERY_MAX_CONDITION_COUNT ||
+                    ParseInt32Strict(fields[1], &nodeId) != HDB_OK ||
+                    ParseInt32Strict(fields[2], &sourceId) != HDB_OK ||
+                    ValidateNameText(fields[3], "condition field name") != HDB_OK ||
+                    ParseInt32Strict(fields[4], &valueType) != HDB_OK ||
+                    ValidateValueType(valueType) != HDB_OK)
+                {
+                    SetLastError("invalid in condition");
+                    return HDB_ERR_QUERY_RANGE;
+                }
+                values.clear();
+                for (valueIndex = 5; valueIndex < fields.size(); ++valueIndex)
+                {
+                    if (ValidateValueText(fields[valueIndex], "condition in value") != HDB_OK)
+                    {
+                        return HDB_ERR_QUERY_RANGE;
+                    }
+                    values.push_back(fields[valueIndex]);
+                }
+                if (outAst.AddConditionIn(sourceId,
+                    fields[3].c_str(),
+                    valueType,
+                    values,
+                    &addedNodeId) != 0 ||
+                    addedNodeId != nodeId)
+                {
+                    SetLastError("invalid in condition");
+                    return HDB_ERR_QUERY_RANGE;
+                }
+            }
+            else if (fields[0] == "group")
+            {
+                std::vector<int> childNodeIds;
+                int logic;
+                size_t childIndex;
+                int childNodeId;
+
+                if (fields.size() < 5 ||
+                    outAst.conditions.size() >= HDB_QUERY_MAX_CONDITION_COUNT ||
+                    ParseInt32Strict(fields[1], &nodeId) != HDB_OK ||
+                    ParseInt32Strict(fields[2], &logic) != HDB_OK ||
+                    ValidateConditionLogic(logic) != HDB_OK)
+                {
+                    SetLastError("invalid group condition");
+                    return HDB_ERR_QUERY_RANGE;
+                }
+                childNodeIds.clear();
+                for (childIndex = 3; childIndex < fields.size(); ++childIndex)
+                {
+                    if (ParseInt32Strict(fields[childIndex], &childNodeId) != HDB_OK)
+                    {
+                        return HDB_ERR_QUERY_RANGE;
+                    }
+                    childNodeIds.push_back(childNodeId);
+                }
+                if (outAst.AddConditionGroup(logic, childNodeIds, &addedNodeId) != 0 ||
+                    addedNodeId != nodeId)
+                {
+                    SetLastError("invalid group condition");
+                    return HDB_ERR_QUERY_RANGE;
+                }
+            }
+            else
+            {
+                SetLastError("unknown condition type");
+                return HDB_ERR_QUERY_RANGE;
+            }
+        }
+        else if (line.find("where_root=") == 0)
+        {
+            int nodeId;
+
+            if (ParseInt32Strict(line.substr(11), &nodeId) != HDB_OK ||
+                outAst.SetWhereRoot(nodeId) != 0)
+            {
+                SetLastError("invalid where root");
+                return HDB_ERR_QUERY_RANGE;
             }
         }
         else if (line.find("order=") == 0)
@@ -496,6 +908,16 @@ const char* CHdbQueryAstCodec::GetLastError() const
 int CHdbQueryAstCodec::ValidateText(const std::string& text, const char* name)
 {
     if (text.empty() || text.size() > HDB_QUERY_MAX_TEXT_LENGTH || HdbQueryCodecContainsUnsafeChar(text))
+    {
+        SetLastError(name);
+        return HDB_ERR_PARAM;
+    }
+    return HDB_OK;
+}
+
+int CHdbQueryAstCodec::ValidateValueText(const std::string& text, const char* name)
+{
+    if (text.size() > HDB_QUERY_MAX_TEXT_LENGTH || HdbQueryCodecContainsUnsafeChar(text))
     {
         SetLastError(name);
         return HDB_ERR_PARAM;
@@ -560,6 +982,43 @@ int CHdbQueryAstCodec::ValidateJoinType(int joinType)
         return HDB_OK;
     }
     SetLastError("invalid join type");
+    return HDB_ERR_QUERY_RANGE;
+}
+
+int CHdbQueryAstCodec::ValidateStatementType(int statementType)
+{
+    if (statementType == HDB_QST_SELECT ||
+        statementType == HDB_QST_INSERT ||
+        statementType == HDB_QST_UPDATE ||
+        statementType == HDB_QST_DELETE)
+    {
+        return HDB_OK;
+    }
+    SetLastError("invalid statement type");
+    return HDB_ERR_QUERY_RANGE;
+}
+
+int CHdbQueryAstCodec::ValidateConditionType(int conditionType)
+{
+    if (conditionType == HDB_QCT_COMPARE ||
+        conditionType == HDB_QCT_NULL ||
+        conditionType == HDB_QCT_BETWEEN ||
+        conditionType == HDB_QCT_IN ||
+        conditionType == HDB_QCT_GROUP)
+    {
+        return HDB_OK;
+    }
+    SetLastError("invalid condition type");
+    return HDB_ERR_QUERY_RANGE;
+}
+
+int CHdbQueryAstCodec::ValidateConditionLogic(int logic)
+{
+    if (logic == HDB_QCL_AND || logic == HDB_QCL_OR)
+    {
+        return HDB_OK;
+    }
+    SetLastError("invalid condition logic");
     return HDB_ERR_QUERY_RANGE;
 }
 

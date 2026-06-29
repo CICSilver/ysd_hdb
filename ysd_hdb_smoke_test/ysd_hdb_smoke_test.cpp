@@ -500,7 +500,8 @@ static int RunDslQuerySmoke(HDB_SESSION session)
         .from(HdbDsl::ALARM)
         .leftJoin(HdbDsl::POINT)
         .on(HdbDsl::ALARM.POINT_ID.eq(HdbDsl::POINT.ID))
-        .where(HdbDsl::ALARM.ID.eq((HdbInt64)1))
+        .where(HdbDsl::ALARM.ID.eq((HdbInt64)1).And(HdbDsl::POINT.NAME.like("point%")))
+        .orderBy(HdbDsl::ALARM.ID.asc())
         .timeRange(MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 13, 0, 0, 0, 0))
         .fetch(&result);
     if (ExpectHdbOk(session, ret, "execute dsl query") != 0)
@@ -546,6 +547,95 @@ static int RunDslQuerySmoke(HDB_SESSION session)
         return 1;
     }
     PrintOk("DSL 查询通过");
+    return 0;
+}
+
+// 测试 DSL 增、删、改
+static int RunDslDmlSmoke(HDB_SESSION session)
+{
+    CHdbCreate create(session);
+    CHdbDslResult result;
+    std::string pointName;
+    int affectedRows;
+    int hasRow;
+    int ret;
+
+    PrintTestTitle("DSL DML", "覆盖 insert/update/delete 和影响行数");
+    affectedRows = 0;
+    ret = create.insertInto(HdbDsl::POINT)
+        .set(HdbDsl::POINT.ID, (HdbInt64)2000)
+        .set(HdbDsl::POINT.DEVICE_ID, (HdbInt64)200)
+        .set(HdbDsl::POINT.NAME, "point C")
+        .execute(&affectedRows);
+    if (ExpectHdbOk(session, ret, "dsl insert point") != 0)
+    {
+        return 1;
+    }
+    if (affectedRows != 1)
+    {
+        PrintFail("dsl insert affected rows");
+        printf("affectedRows=%d expected=1\n", affectedRows);
+        return 1;
+    }
+
+    affectedRows = 0;
+    ret = create.update(HdbDsl::POINT)
+        .set(HdbDsl::POINT.NAME, "point C updated")
+        .where(HdbDsl::POINT.ID.eq((HdbInt64)2000))
+        .execute(&affectedRows);
+    if (ExpectHdbOk(session, ret, "dsl update point") != 0)
+    {
+        return 1;
+    }
+    if (affectedRows != 1)
+    {
+        PrintFail("dsl update affected rows");
+        printf("affectedRows=%d expected=1\n", affectedRows);
+        return 1;
+    }
+
+    ret = create.select(HdbDsl::POINT.NAME)
+        .from(HdbDsl::POINT)
+        .where(HdbDsl::POINT.ID.eq((HdbInt64)2000))
+        .fetch(&result);
+    if (ExpectHdbOk(session, ret, "dsl select updated point") != 0)
+    {
+        return 1;
+    }
+    hasRow = 0;
+    ret = result.Next(&hasRow);
+    if (ExpectHdbOk(session, ret, "dsl updated point row") != 0 || hasRow != 1)
+    {
+        return 1;
+    }
+    ret = result.Get(HdbDsl::POINT.NAME, pointName);
+    if (ExpectHdbOk(session, ret, "dsl updated point name") != 0)
+    {
+        return 1;
+    }
+    if (pointName != "point C updated")
+    {
+        PrintFail("dsl updated point name");
+        printf("point name mismatch\n");
+        return 1;
+    }
+
+    affectedRows = 0;
+    ret = create.deleteFrom(HdbDsl::POINT)
+        .where(HdbDsl::POINT.ID.eq((HdbInt64)2000))
+        .execute(&affectedRows);
+    if (ExpectHdbOk(session, ret, "dsl delete point") != 0)
+    {
+        return 1;
+    }
+    if (affectedRows != 1)
+    {
+        PrintFail("dsl delete affected rows");
+        printf("affectedRows=%d expected=1\n", affectedRows);
+        return 1;
+    }
+
+    PrintOk("DSL 增、删、改 测试通过");
     return 0;
 }
 
@@ -794,6 +884,7 @@ int main(int argc, char* argv[])
     // 走 DLL 查询链路
     if (RunHistoryQuerySmoke(session) != 0 ||
         RunDslQuerySmoke(session) != 0 ||
+        RunDslDmlSmoke(session) != 0 ||
         RunTimestampWhereSmoke(session) != 0 ||
         RunPointQuerySmoke(session) != 0)
     {

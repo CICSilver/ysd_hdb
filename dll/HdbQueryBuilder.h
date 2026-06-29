@@ -12,6 +12,8 @@
 #include <vector>
 
 class CHdbDslCondition;
+class CHdbDslSortField;
+class CHdbDslValueList;
 
 static inline std::string HdbDslIntToText(int value)
 {
@@ -63,6 +65,37 @@ public:
     CHdbDslCondition eq(const char* value) const;
     CHdbDslCondition eq(const std::string& value) const;
     CHdbDslCondition eq(const CHdbDslField& right) const;
+    CHdbDslCondition ne(int value) const;
+    CHdbDslCondition ne(HdbInt64 value) const;
+    CHdbDslCondition ne(double value) const;
+    CHdbDslCondition ne(const char* value) const;
+    CHdbDslCondition ne(const std::string& value) const;
+    CHdbDslCondition gt(int value) const;
+    CHdbDslCondition gt(HdbInt64 value) const;
+    CHdbDslCondition gt(double value) const;
+    CHdbDslCondition ge(int value) const;
+    CHdbDslCondition ge(HdbInt64 value) const;
+    CHdbDslCondition ge(double value) const;
+    CHdbDslCondition lt(int value) const;
+    CHdbDslCondition lt(HdbInt64 value) const;
+    CHdbDslCondition lt(double value) const;
+    CHdbDslCondition le(int value) const;
+    CHdbDslCondition le(HdbInt64 value) const;
+    CHdbDslCondition le(double value) const;
+    CHdbDslCondition like(const char* value) const;
+    CHdbDslCondition like(const std::string& value) const;
+    CHdbDslCondition isNull() const;
+    CHdbDslCondition isNotNull() const;
+    CHdbDslCondition between(int beginValue, int endValue) const;
+    CHdbDslCondition between(HdbInt64 beginValue, HdbInt64 endValue) const;
+    CHdbDslCondition between(double beginValue, double endValue) const;
+    CHdbDslCondition in(const int* values, int count) const;
+    CHdbDslCondition in(const HdbInt64* values, int count) const;
+    CHdbDslCondition in(const double* values, int count) const;
+    CHdbDslCondition in(const char* const* values, int count) const;
+    CHdbDslCondition in(const CHdbDslValueList& values) const;
+    CHdbDslSortField asc() const;
+    CHdbDslSortField desc() const;
     int SameIdentity(const CHdbDslField& other) const;
 
 private:
@@ -71,28 +104,178 @@ private:
     int m_fieldType;
 };
 
-class CHdbDslCondition
+class CHdbDslValueList
 {
 public:
-    CHdbDslCondition()
-        : m_left(),
-          m_right(),
-          m_op(0),
-          m_valueType(0),
-          m_valueText(),
-          m_isFieldCompare(0)
+    CHdbDslValueList()
+        : m_valueType(0),
+          m_values()
+    {
+    }
+
+    CHdbDslValueList& add(int value)
+    {
+        AddValue(HDB_QVT_INT32, HdbDslIntToText(value));
+        return *this;
+    }
+
+    CHdbDslValueList& add(HdbInt64 value)
+    {
+        AddValue(HDB_QVT_INT64, HdbDslInt64ToText(value));
+        return *this;
+    }
+
+    CHdbDslValueList& add(double value)
+    {
+        AddValue(HDB_QVT_DOUBLE, HdbDslDoubleToText(value));
+        return *this;
+    }
+
+    CHdbDslValueList& add(const char* value)
+    {
+        AddValue(HDB_QVT_STRING, value != NULL ? value : "");
+        return *this;
+    }
+
+    CHdbDslValueList& add(const std::string& value)
+    {
+        AddValue(HDB_QVT_STRING, value);
+        return *this;
+    }
+
+    int IsValid() const
+    {
+        return m_valueType != 0 && !m_values.empty();
+    }
+
+    int ValueType() const
+    {
+        return m_valueType;
+    }
+
+    const std::vector<std::string>& Values() const
+    {
+        return m_values;
+    }
+
+private:
+    void AddValue(int valueType, const std::string& valueText)
+    {
+        if (m_valueType == 0)
+        {
+            m_valueType = valueType;
+        }
+        if (m_valueType == valueType)
+        {
+            m_values.push_back(valueText);
+        }
+    }
+
+private:
+    int m_valueType;
+    std::vector<std::string> m_values;
+};
+
+class CHdbDslSortField
+{
+public:
+    CHdbDslSortField()
+        : m_field(),
+          m_orderType(0)
+    {
+    }
+
+    CHdbDslSortField(const CHdbDslField& field, int orderType)
+        : m_field(field),
+          m_orderType(orderType)
     {
     }
 
     int IsValid() const
     {
-        return m_left.IsValid() && m_op != 0 &&
-            (m_isFieldCompare ? m_right.IsValid() : m_valueType != 0);
+        return m_field.IsValid() && (m_orderType == HDB_ORDER_ASC || m_orderType == HDB_ORDER_DESC);
+    }
+
+    const CHdbDslField& Field() const
+    {
+        return m_field;
+    }
+
+    int OrderType() const
+    {
+        return m_orderType;
+    }
+
+private:
+    CHdbDslField m_field;
+    int m_orderType;
+};
+
+class CHdbDslCondition
+{
+public:
+    enum ConditionKind
+    {
+        HDB_DSL_CONDITION_EMPTY = 0,
+        HDB_DSL_CONDITION_COMPARE = 1,
+        HDB_DSL_CONDITION_FIELD_COMPARE = 2,
+        HDB_DSL_CONDITION_NULL = 3,
+        HDB_DSL_CONDITION_BETWEEN = 4,
+        HDB_DSL_CONDITION_IN = 5,
+        HDB_DSL_CONDITION_GROUP = 6
+    };
+
+    CHdbDslCondition()
+        : m_kind(HDB_DSL_CONDITION_EMPTY),
+          m_left(),
+          m_right(),
+          m_op(0),
+          m_valueType(0),
+          m_valueText(),
+          m_secondValueText(),
+          m_values(),
+          m_logic(0),
+          m_children()
+    {
+    }
+
+    int IsValid() const
+    {
+        if (m_kind == HDB_DSL_CONDITION_COMPARE)
+        {
+            return m_left.IsValid() && m_op != 0 && m_valueType != 0;
+        }
+        if (m_kind == HDB_DSL_CONDITION_FIELD_COMPARE)
+        {
+            return m_left.IsValid() && m_right.IsValid() && m_op != 0;
+        }
+        if (m_kind == HDB_DSL_CONDITION_NULL)
+        {
+            return m_left.IsValid();
+        }
+        if (m_kind == HDB_DSL_CONDITION_BETWEEN)
+        {
+            return m_left.IsValid() && m_valueType != 0;
+        }
+        if (m_kind == HDB_DSL_CONDITION_IN)
+        {
+            return m_left.IsValid() && m_valueType != 0 && !m_values.empty();
+        }
+        if (m_kind == HDB_DSL_CONDITION_GROUP)
+        {
+            return (m_logic == HDB_QCL_AND || m_logic == HDB_QCL_OR) && m_children.size() >= 2;
+        }
+        return 0;
     }
 
     int IsFieldCompare() const
     {
-        return m_isFieldCompare;
+        return m_kind == HDB_DSL_CONDITION_FIELD_COMPARE;
+    }
+
+    int Kind() const
+    {
+        return m_kind;
     }
 
     const CHdbDslField& LeftField() const
@@ -120,20 +303,70 @@ public:
         return m_valueText.c_str();
     }
 
+    const char* SecondValueText() const
+    {
+        return m_secondValueText.c_str();
+    }
+
+    const std::vector<std::string>& Values() const
+    {
+        return m_values;
+    }
+
+    int Logic() const
+    {
+        return m_logic;
+    }
+
+    const std::vector<CHdbDslCondition>& Children() const
+    {
+        return m_children;
+    }
+
+    CHdbDslCondition And(const CHdbDslCondition& other) const
+    {
+        return CHdbDslCondition(HDB_QCL_AND, *this, other);
+    }
+
+    CHdbDslCondition Or(const CHdbDslCondition& other) const
+    {
+        return CHdbDslCondition(HDB_QCL_OR, *this, other);
+    }
+
 private:
     CHdbDslCondition(const CHdbDslField& left, int op, int valueType, const std::string& valueText);
     CHdbDslCondition(const CHdbDslField& left, int op, const CHdbDslField& right);
+    CHdbDslCondition(const CHdbDslField& left, int isNotNull);
+    CHdbDslCondition(const CHdbDslField& left,
+        int valueType,
+        const std::string& beginText,
+        const std::string& endText);
+    CHdbDslCondition(const CHdbDslField& left,
+        int valueType,
+        const std::vector<std::string>& values);
+    CHdbDslCondition(int logic, const CHdbDslCondition& left, const CHdbDslCondition& right);
 
 private:
+    int m_kind;
     CHdbDslField m_left;
     CHdbDslField m_right;
     int m_op;
     int m_valueType;
     std::string m_valueText;
-    int m_isFieldCompare;
+    std::string m_secondValueText;
+    std::vector<std::string> m_values;
+    int m_logic;
+    std::vector<CHdbDslCondition> m_children;
 
     friend class CHdbDslField;
 };
+
+static inline int HdbDslIntegerValueTypeForField(const CHdbDslField& field)
+{
+    return field.FieldType() == HDB_FT_INT64 || field.FieldType() == HDB_FT_TIMESTAMP_MS ?
+        HDB_QVT_INT64 :
+        HDB_QVT_INT32;
+}
 
 inline CHdbDslField::CHdbDslField()
     : m_datasetName(""),
@@ -203,6 +436,223 @@ inline CHdbDslCondition CHdbDslField::eq(const CHdbDslField& right) const
     return CHdbDslCondition(*this, HDB_OP_EQ, right);
 }
 
+inline CHdbDslCondition CHdbDslField::ne(int value) const
+{
+    if (HdbDslIntegerValueTypeForField(*this) == HDB_QVT_INT64)
+    {
+        return CHdbDslCondition(*this, HDB_OP_NE, HDB_QVT_INT64, HdbDslInt64ToText((HdbInt64)value));
+    }
+    return CHdbDslCondition(*this, HDB_OP_NE, HDB_QVT_INT32, HdbDslIntToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::ne(HdbInt64 value) const
+{
+    return CHdbDslCondition(*this, HDB_OP_NE, HDB_QVT_INT64, HdbDslInt64ToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::ne(double value) const
+{
+    return CHdbDslCondition(*this, HDB_OP_NE, HDB_QVT_DOUBLE, HdbDslDoubleToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::ne(const char* value) const
+{
+    return CHdbDslCondition(*this, HDB_OP_NE, HDB_QVT_STRING, value != NULL ? value : "");
+}
+
+inline CHdbDslCondition CHdbDslField::ne(const std::string& value) const
+{
+    return CHdbDslCondition(*this, HDB_OP_NE, HDB_QVT_STRING, value);
+}
+
+inline CHdbDslCondition CHdbDslField::gt(int value) const
+{
+    if (HdbDslIntegerValueTypeForField(*this) == HDB_QVT_INT64)
+    {
+        return CHdbDslCondition(*this, HDB_OP_GT, HDB_QVT_INT64, HdbDslInt64ToText((HdbInt64)value));
+    }
+    return CHdbDslCondition(*this, HDB_OP_GT, HDB_QVT_INT32, HdbDslIntToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::gt(HdbInt64 value) const
+{
+    return CHdbDslCondition(*this, HDB_OP_GT, HDB_QVT_INT64, HdbDslInt64ToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::gt(double value) const
+{
+    return CHdbDslCondition(*this, HDB_OP_GT, HDB_QVT_DOUBLE, HdbDslDoubleToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::ge(int value) const
+{
+    if (HdbDslIntegerValueTypeForField(*this) == HDB_QVT_INT64)
+    {
+        return CHdbDslCondition(*this, HDB_OP_GE, HDB_QVT_INT64, HdbDslInt64ToText((HdbInt64)value));
+    }
+    return CHdbDslCondition(*this, HDB_OP_GE, HDB_QVT_INT32, HdbDslIntToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::ge(HdbInt64 value) const
+{
+    return CHdbDslCondition(*this, HDB_OP_GE, HDB_QVT_INT64, HdbDslInt64ToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::ge(double value) const
+{
+    return CHdbDslCondition(*this, HDB_OP_GE, HDB_QVT_DOUBLE, HdbDslDoubleToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::lt(int value) const
+{
+    if (HdbDslIntegerValueTypeForField(*this) == HDB_QVT_INT64)
+    {
+        return CHdbDslCondition(*this, HDB_OP_LT, HDB_QVT_INT64, HdbDslInt64ToText((HdbInt64)value));
+    }
+    return CHdbDslCondition(*this, HDB_OP_LT, HDB_QVT_INT32, HdbDslIntToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::lt(HdbInt64 value) const
+{
+    return CHdbDslCondition(*this, HDB_OP_LT, HDB_QVT_INT64, HdbDslInt64ToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::lt(double value) const
+{
+    return CHdbDslCondition(*this, HDB_OP_LT, HDB_QVT_DOUBLE, HdbDslDoubleToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::le(int value) const
+{
+    if (HdbDslIntegerValueTypeForField(*this) == HDB_QVT_INT64)
+    {
+        return CHdbDslCondition(*this, HDB_OP_LE, HDB_QVT_INT64, HdbDslInt64ToText((HdbInt64)value));
+    }
+    return CHdbDslCondition(*this, HDB_OP_LE, HDB_QVT_INT32, HdbDslIntToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::le(HdbInt64 value) const
+{
+    return CHdbDslCondition(*this, HDB_OP_LE, HDB_QVT_INT64, HdbDslInt64ToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::le(double value) const
+{
+    return CHdbDslCondition(*this, HDB_OP_LE, HDB_QVT_DOUBLE, HdbDslDoubleToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::like(const char* value) const
+{
+    return CHdbDslCondition(*this, HDB_OP_LIKE, HDB_QVT_STRING, value != NULL ? value : "");
+}
+
+inline CHdbDslCondition CHdbDslField::like(const std::string& value) const
+{
+    return CHdbDslCondition(*this, HDB_OP_LIKE, HDB_QVT_STRING, value);
+}
+
+inline CHdbDslCondition CHdbDslField::isNull() const
+{
+    return CHdbDslCondition(*this, 0);
+}
+
+inline CHdbDslCondition CHdbDslField::isNotNull() const
+{
+    return CHdbDslCondition(*this, 1);
+}
+
+inline CHdbDslCondition CHdbDslField::between(int beginValue, int endValue) const
+{
+    if (HdbDslIntegerValueTypeForField(*this) == HDB_QVT_INT64)
+    {
+        return CHdbDslCondition(*this,
+            HDB_QVT_INT64,
+            HdbDslInt64ToText((HdbInt64)beginValue),
+            HdbDslInt64ToText((HdbInt64)endValue));
+    }
+    return CHdbDslCondition(*this, HDB_QVT_INT32, HdbDslIntToText(beginValue), HdbDslIntToText(endValue));
+}
+
+inline CHdbDslCondition CHdbDslField::between(HdbInt64 beginValue, HdbInt64 endValue) const
+{
+    return CHdbDslCondition(*this, HDB_QVT_INT64, HdbDslInt64ToText(beginValue), HdbDslInt64ToText(endValue));
+}
+
+inline CHdbDslCondition CHdbDslField::between(double beginValue, double endValue) const
+{
+    return CHdbDslCondition(*this, HDB_QVT_DOUBLE, HdbDslDoubleToText(beginValue), HdbDslDoubleToText(endValue));
+}
+
+inline CHdbDslCondition CHdbDslField::in(const int* values, int count) const
+{
+    std::vector<std::string> texts;
+    int i;
+
+    for (i = 0; values != NULL && i < count; ++i)
+    {
+        if (HdbDslIntegerValueTypeForField(*this) == HDB_QVT_INT64)
+        {
+            texts.push_back(HdbDslInt64ToText((HdbInt64)values[i]));
+        }
+        else
+        {
+            texts.push_back(HdbDslIntToText(values[i]));
+        }
+    }
+    return CHdbDslCondition(*this, HdbDslIntegerValueTypeForField(*this), texts);
+}
+
+inline CHdbDslCondition CHdbDslField::in(const HdbInt64* values, int count) const
+{
+    std::vector<std::string> texts;
+    int i;
+
+    for (i = 0; values != NULL && i < count; ++i)
+    {
+        texts.push_back(HdbDslInt64ToText(values[i]));
+    }
+    return CHdbDslCondition(*this, HDB_QVT_INT64, texts);
+}
+
+inline CHdbDslCondition CHdbDslField::in(const double* values, int count) const
+{
+    std::vector<std::string> texts;
+    int i;
+
+    for (i = 0; values != NULL && i < count; ++i)
+    {
+        texts.push_back(HdbDslDoubleToText(values[i]));
+    }
+    return CHdbDslCondition(*this, HDB_QVT_DOUBLE, texts);
+}
+
+inline CHdbDslCondition CHdbDslField::in(const char* const* values, int count) const
+{
+    std::vector<std::string> texts;
+    int i;
+
+    for (i = 0; values != NULL && i < count; ++i)
+    {
+        texts.push_back(values[i] != NULL ? values[i] : "");
+    }
+    return CHdbDslCondition(*this, HDB_QVT_STRING, texts);
+}
+
+inline CHdbDslCondition CHdbDslField::in(const CHdbDslValueList& values) const
+{
+    return CHdbDslCondition(*this, values.ValueType(), values.Values());
+}
+
+inline CHdbDslSortField CHdbDslField::asc() const
+{
+    return CHdbDslSortField(*this, HDB_ORDER_ASC);
+}
+
+inline CHdbDslSortField CHdbDslField::desc() const
+{
+    return CHdbDslSortField(*this, HDB_ORDER_DESC);
+}
+
 inline int CHdbDslField::SameIdentity(const CHdbDslField& other) const
 {
     return strcmp(m_datasetName, other.m_datasetName) == 0 &&
@@ -213,25 +663,98 @@ inline CHdbDslCondition::CHdbDslCondition(const CHdbDslField& left,
     int op,
     int valueType,
     const std::string& valueText)
-    : m_left(left),
+    : m_kind(HDB_DSL_CONDITION_COMPARE),
+      m_left(left),
       m_right(),
       m_op(op),
       m_valueType(valueType),
       m_valueText(valueText),
-      m_isFieldCompare(0)
+      m_secondValueText(),
+      m_values(),
+      m_logic(0),
+      m_children()
 {
 }
 
 inline CHdbDslCondition::CHdbDslCondition(const CHdbDslField& left,
     int op,
     const CHdbDslField& right)
-    : m_left(left),
+    : m_kind(HDB_DSL_CONDITION_FIELD_COMPARE),
+      m_left(left),
       m_right(right),
       m_op(op),
       m_valueType(0),
       m_valueText(),
-      m_isFieldCompare(1)
+      m_secondValueText(),
+      m_values(),
+      m_logic(0),
+      m_children()
 {
+}
+
+inline CHdbDslCondition::CHdbDslCondition(const CHdbDslField& left, int isNotNull)
+    : m_kind(HDB_DSL_CONDITION_NULL),
+      m_left(left),
+      m_right(),
+      m_op(isNotNull ? 1 : 0),
+      m_valueType(0),
+      m_valueText(),
+      m_secondValueText(),
+      m_values(),
+      m_logic(0),
+      m_children()
+{
+}
+
+inline CHdbDslCondition::CHdbDslCondition(const CHdbDslField& left,
+    int valueType,
+    const std::string& beginText,
+    const std::string& endText)
+    : m_kind(HDB_DSL_CONDITION_BETWEEN),
+      m_left(left),
+      m_right(),
+      m_op(0),
+      m_valueType(valueType),
+      m_valueText(beginText),
+      m_secondValueText(endText),
+      m_values(),
+      m_logic(0),
+      m_children()
+{
+}
+
+inline CHdbDslCondition::CHdbDslCondition(const CHdbDslField& left,
+    int valueType,
+    const std::vector<std::string>& values)
+    : m_kind(HDB_DSL_CONDITION_IN),
+      m_left(left),
+      m_right(),
+      m_op(0),
+      m_valueType(valueType),
+      m_valueText(),
+      m_secondValueText(),
+      m_values(values),
+      m_logic(0),
+      m_children()
+{
+}
+
+inline CHdbDslCondition::CHdbDslCondition(int logic,
+    const CHdbDslCondition& left,
+    const CHdbDslCondition& right)
+    : m_kind(HDB_DSL_CONDITION_GROUP),
+      m_left(),
+      m_right(),
+      m_op(0),
+      m_valueType(0),
+      m_valueText(),
+      m_secondValueText(),
+      m_values(),
+      m_logic(logic),
+      m_children()
+{
+    m_children.push_back(left);
+    m_children.push_back(right);
 }
 
 class CHdbDslTable
@@ -429,7 +952,8 @@ public:
           m_error(HDB_OK),
           m_hasRoot(0),
           m_hasWhere(0),
-          m_selectsAdded(0)
+          m_selectsAdded(0),
+          m_ordersAdded(0)
     {
     }
 
@@ -445,7 +969,9 @@ public:
         m_hasRoot = 0;
         m_hasWhere = 0;
         m_selectsAdded = 0;
+        m_ordersAdded = 0;
         m_selectedFields.clear();
+        m_orderFields.clear();
         m_sources.clear();
         m_where = CHdbDslCondition();
     }
@@ -513,6 +1039,22 @@ public:
         return *this;
     }
 
+    CHdbDslQuery& orderBy(const CHdbDslSortField& field)
+    {
+        if (m_error == HDB_OK)
+        {
+            if (!field.IsValid())
+            {
+                m_error = HDB_ERR_PARAM;
+            }
+            else
+            {
+                m_orderFields.push_back(field);
+            }
+        }
+        return *this;
+    }
+
     CHdbDslQuery& timeRange(HdbInt64 beginMs, HdbInt64 endMs)
     {
         if (m_error == HDB_OK)
@@ -575,6 +1117,12 @@ public:
             m_error = ret;
             return ret;
         }
+        ret = AddOrdersToQuery();
+        if (ret != HDB_OK)
+        {
+            m_error = ret;
+            return ret;
+        }
         rawResult = NULL;
         ret = HdbQueryExecute(m_query, &rawResult);
         if (ret == HDB_OK)
@@ -583,6 +1131,43 @@ public:
         }
         m_error = ret;
         return ret;
+    }
+
+    template <class RowT>
+    int fetchInto(std::vector<RowT>& rows)
+    {
+        CHdbDslResult result;
+        int hasRow;
+        int ret;
+
+        rows.clear();
+        ret = fetch(&result);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        while (1)
+        {
+            RowT row;
+
+            hasRow = 0;
+            ret = result.Next(&hasRow);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            if (!hasRow)
+            {
+                break;
+            }
+            ret = row.FillFrom(result);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            rows.push_back(row);
+        }
+        return HDB_OK;
     }
 
     int GetError() const
@@ -731,45 +1316,135 @@ private:
 
     int AddWhereToQuery()
     {
-        HDB_SOURCE source;
+        int conditionId;
+        int ret;
 
         if (!m_hasWhere)
         {
             return HDB_OK;
         }
-        source = FindSource(m_where.LeftField().DatasetName());
+        conditionId = -1;
+        ret = AddConditionToQuery(m_where, &conditionId);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        return HdbQueryWhereCondition(m_query, conditionId);
+    }
+
+    int AddConditionToQuery(const CHdbDslCondition& condition, int* outConditionId)
+    {
+        HDB_SOURCE source;
+        std::vector<const char*> valueTexts;
+        std::vector<int> childIds;
+        int ret;
+        int i;
+
+        if (outConditionId != NULL)
+        {
+            *outConditionId = -1;
+        }
+        if (outConditionId == NULL || !condition.IsValid() || condition.IsFieldCompare())
+        {
+            return HDB_ERR_QUERY_RANGE;
+        }
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_GROUP)
+        {
+            for (i = 0; i < (int)condition.Children().size(); ++i)
+            {
+                int childId;
+
+                childId = -1;
+                ret = AddConditionToQuery(condition.Children()[i], &childId);
+                if (ret != HDB_OK)
+                {
+                    return ret;
+                }
+                childIds.push_back(childId);
+            }
+            return HdbQueryConditionGroup(m_query,
+                condition.Logic(),
+                childIds.empty() ? NULL : &childIds[0],
+                (int)childIds.size(),
+                outConditionId);
+        }
+        source = FindSource(condition.LeftField().DatasetName());
         if (source == NULL)
         {
             return HDB_ERR_FIELD_REF;
         }
-        switch (m_where.ValueType())
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_COMPARE)
         {
-        case HDB_QVT_INT32:
-            return HdbQueryWhereInt32(m_query,
+            return HdbQueryConditionValue(m_query,
                 source,
-                m_where.LeftField().FieldName(),
-                m_where.Op(),
-                atoi(m_where.ValueText()));
-        case HDB_QVT_INT64:
-            return HdbQueryWhereInt64(m_query,
-                source,
-                m_where.LeftField().FieldName(),
-                m_where.Op(),
-                HdbDslTextToInt64(m_where.ValueText()));
-        case HDB_QVT_DOUBLE:
-            return HdbQueryWhereDouble(m_query,
-                source,
-                m_where.LeftField().FieldName(),
-                m_where.Op(),
-                atof(m_where.ValueText()));
-        case HDB_QVT_STRING:
-            return HdbQueryWhereStringEq(m_query,
-                source,
-                m_where.LeftField().FieldName(),
-                m_where.ValueText());
-        default:
-            return HDB_ERR_QUERY_RANGE;
+                condition.LeftField().FieldName(),
+                condition.Op(),
+                condition.ValueType(),
+                condition.ValueText(),
+                outConditionId);
         }
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_NULL)
+        {
+            return HdbQueryConditionNull(m_query,
+                source,
+                condition.LeftField().FieldName(),
+                condition.Op(),
+                outConditionId);
+        }
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_BETWEEN)
+        {
+            return HdbQueryConditionBetween(m_query,
+                source,
+                condition.LeftField().FieldName(),
+                condition.ValueType(),
+                condition.ValueText(),
+                condition.SecondValueText(),
+                outConditionId);
+        }
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_IN)
+        {
+            for (i = 0; i < (int)condition.Values().size(); ++i)
+            {
+                valueTexts.push_back(condition.Values()[i].c_str());
+            }
+            return HdbQueryConditionIn(m_query,
+                source,
+                condition.LeftField().FieldName(),
+                condition.ValueType(),
+                valueTexts.empty() ? NULL : &valueTexts[0],
+                (int)valueTexts.size(),
+                outConditionId);
+        }
+        return HDB_ERR_QUERY_RANGE;
+    }
+
+    int AddOrdersToQuery()
+    {
+        int i;
+
+        if (m_ordersAdded)
+        {
+            return HDB_OK;
+        }
+        for (i = 0; i < (int)m_orderFields.size(); ++i)
+        {
+            HDB_SOURCE source;
+
+            source = FindSource(m_orderFields[i].Field().DatasetName());
+            if (source == NULL)
+            {
+                return HDB_ERR_FIELD_REF;
+            }
+            if (HdbQueryOrderBy(m_query,
+                source,
+                m_orderFields[i].Field().FieldName(),
+                m_orderFields[i].OrderType()) != HDB_OK)
+            {
+                return HDB_ERR_FIELD_REF;
+            }
+        }
+        m_ordersAdded = 1;
+        return HDB_OK;
     }
 
 private:
@@ -783,7 +1458,9 @@ private:
     int m_hasRoot;
     int m_hasWhere;
     int m_selectsAdded;
+    int m_ordersAdded;
     std::vector<HdbDslSelectedField> m_selectedFields;
+    std::vector<CHdbDslSortField> m_orderFields;
     std::vector<HdbDslSourceBinding> m_sources;
     CHdbDslCondition m_where;
 
@@ -822,11 +1499,308 @@ inline CHdbDslJoinStep CHdbDslQuery::innerJoin(const CHdbDslTable& table)
     return CHdbDslJoinStep(this, table, HDB_JOIN_INNER);
 }
 
+class CHdbDslDml
+{
+public:
+    explicit CHdbDslDml(HDB_SESSION session)
+        : m_session(session),
+          m_query(NULL),
+          m_rootSource(NULL),
+          m_datasetName(""),
+          m_error(HDB_OK),
+          m_hasWhere(0),
+          m_whereAdded(0),
+          m_where()
+    {
+    }
+
+    ~CHdbDslDml()
+    {
+        FreeQuery();
+    }
+
+    CHdbDslDml& Reset(const CHdbDslTable& table, int statementType)
+    {
+        FreeQuery();
+        m_rootSource = NULL;
+        m_datasetName = table.DatasetName();
+        m_error = HDB_OK;
+        m_hasWhere = 0;
+        m_whereAdded = 0;
+        m_where = CHdbDslCondition();
+        if (m_session == NULL)
+        {
+            m_error = HDB_ERR_PARAM;
+            return *this;
+        }
+        m_error = HdbQueryCreate(m_session, &m_query);
+        if (m_error == HDB_OK)
+        {
+            m_error = HdbQuerySetStatementType(m_query, statementType);
+        }
+        if (m_error == HDB_OK)
+        {
+            m_error = HdbQueryFrom(m_query, table.DatasetName(), &m_rootSource);
+        }
+        return *this;
+    }
+
+    CHdbDslDml& set(const CHdbDslField& field, int value)
+    {
+        if (HdbDslIntegerValueTypeForField(field) == HDB_QVT_INT64)
+        {
+            return SetValue(field, HDB_QVT_INT64, HdbDslInt64ToText((HdbInt64)value));
+        }
+        return SetValue(field, HDB_QVT_INT32, HdbDslIntToText(value));
+    }
+
+    CHdbDslDml& set(const CHdbDslField& field, HdbInt64 value)
+    {
+        return SetValue(field, HDB_QVT_INT64, HdbDslInt64ToText(value));
+    }
+
+    CHdbDslDml& set(const CHdbDslField& field, double value)
+    {
+        return SetValue(field, HDB_QVT_DOUBLE, HdbDslDoubleToText(value));
+    }
+
+    CHdbDslDml& set(const CHdbDslField& field, const char* value)
+    {
+        return SetValue(field, HDB_QVT_STRING, value != NULL ? value : "");
+    }
+
+    CHdbDslDml& set(const CHdbDslField& field, const std::string& value)
+    {
+        return SetValue(field, HDB_QVT_STRING, value);
+    }
+
+    CHdbDslDml& where(const CHdbDslCondition& condition)
+    {
+        if (m_error == HDB_OK)
+        {
+            if (!condition.IsValid() || condition.IsFieldCompare() || m_hasWhere)
+            {
+                m_error = HDB_ERR_QUERY_RANGE;
+            }
+            else
+            {
+                m_where = condition;
+                m_hasWhere = 1;
+            }
+        }
+        return *this;
+    }
+
+    CHdbDslDml& timeRange(HdbInt64 beginMs, HdbInt64 endMs)
+    {
+        if (m_error == HDB_OK)
+        {
+            m_error = HdbQueryTimeRange(m_query, beginMs, endMs);
+        }
+        return *this;
+    }
+
+    int execute(int* affectedRows)
+    {
+        int ret;
+
+        if (affectedRows != NULL)
+        {
+            *affectedRows = 0;
+        }
+        if (affectedRows == NULL)
+        {
+            return HDB_ERR_PARAM;
+        }
+        if (m_error != HDB_OK)
+        {
+            return m_error;
+        }
+        ret = AddWhereToQuery();
+        if (ret != HDB_OK)
+        {
+            m_error = ret;
+            return ret;
+        }
+        ret = HdbQueryExecuteAffected(m_query, affectedRows);
+        m_error = ret;
+        return ret;
+    }
+
+    int GetError() const
+    {
+        return m_error;
+    }
+
+private:
+    CHdbDslDml& SetValue(const CHdbDslField& field, int valueType, const std::string& valueText)
+    {
+        if (m_error == HDB_OK)
+        {
+            if (!field.IsValid() || strcmp(field.DatasetName(), m_datasetName) != 0)
+            {
+                m_error = HDB_ERR_FIELD_REF;
+            }
+            else
+            {
+                m_error = HdbQuerySetValue(m_query,
+                    m_rootSource,
+                    field.FieldName(),
+                    valueType,
+                    valueText.c_str());
+            }
+        }
+        return *this;
+    }
+
+    void FreeQuery()
+    {
+        if (m_query != NULL)
+        {
+            HdbQueryFree(m_query);
+            m_query = NULL;
+        }
+    }
+
+    HDB_SOURCE FindSource(const char* datasetName) const
+    {
+        if (datasetName != NULL && strcmp(datasetName, m_datasetName) == 0)
+        {
+            return m_rootSource;
+        }
+        return NULL;
+    }
+
+    int AddWhereToQuery()
+    {
+        int conditionId;
+        int ret;
+
+        if (!m_hasWhere || m_whereAdded)
+        {
+            return HDB_OK;
+        }
+        conditionId = -1;
+        ret = AddConditionToQuery(m_where, &conditionId);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = HdbQueryWhereCondition(m_query, conditionId);
+        if (ret == HDB_OK)
+        {
+            m_whereAdded = 1;
+        }
+        return ret;
+    }
+
+    int AddConditionToQuery(const CHdbDslCondition& condition, int* outConditionId)
+    {
+        HDB_SOURCE source;
+        std::vector<const char*> valueTexts;
+        std::vector<int> childIds;
+        int ret;
+        int i;
+
+        if (outConditionId != NULL)
+        {
+            *outConditionId = -1;
+        }
+        if (outConditionId == NULL || !condition.IsValid() || condition.IsFieldCompare())
+        {
+            return HDB_ERR_QUERY_RANGE;
+        }
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_GROUP)
+        {
+            for (i = 0; i < (int)condition.Children().size(); ++i)
+            {
+                int childId;
+
+                childId = -1;
+                ret = AddConditionToQuery(condition.Children()[i], &childId);
+                if (ret != HDB_OK)
+                {
+                    return ret;
+                }
+                childIds.push_back(childId);
+            }
+            return HdbQueryConditionGroup(m_query,
+                condition.Logic(),
+                childIds.empty() ? NULL : &childIds[0],
+                (int)childIds.size(),
+                outConditionId);
+        }
+        source = FindSource(condition.LeftField().DatasetName());
+        if (source == NULL)
+        {
+            return HDB_ERR_FIELD_REF;
+        }
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_COMPARE)
+        {
+            return HdbQueryConditionValue(m_query,
+                source,
+                condition.LeftField().FieldName(),
+                condition.Op(),
+                condition.ValueType(),
+                condition.ValueText(),
+                outConditionId);
+        }
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_NULL)
+        {
+            return HdbQueryConditionNull(m_query,
+                source,
+                condition.LeftField().FieldName(),
+                condition.Op(),
+                outConditionId);
+        }
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_BETWEEN)
+        {
+            return HdbQueryConditionBetween(m_query,
+                source,
+                condition.LeftField().FieldName(),
+                condition.ValueType(),
+                condition.ValueText(),
+                condition.SecondValueText(),
+                outConditionId);
+        }
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_IN)
+        {
+            for (i = 0; i < (int)condition.Values().size(); ++i)
+            {
+                valueTexts.push_back(condition.Values()[i].c_str());
+            }
+            return HdbQueryConditionIn(m_query,
+                source,
+                condition.LeftField().FieldName(),
+                condition.ValueType(),
+                valueTexts.empty() ? NULL : &valueTexts[0],
+                (int)valueTexts.size(),
+                outConditionId);
+        }
+        return HDB_ERR_QUERY_RANGE;
+    }
+
+private:
+    CHdbDslDml(const CHdbDslDml&);
+    CHdbDslDml& operator=(const CHdbDslDml&);
+
+private:
+    HDB_SESSION m_session;
+    HDB_QUERY m_query;
+    HDB_SOURCE m_rootSource;
+    const char* m_datasetName;
+    int m_error;
+    int m_hasWhere;
+    int m_whereAdded;
+    CHdbDslCondition m_where;
+};
+
 class CHdbCreate
 {
 public:
     explicit CHdbCreate(HDB_SESSION session)
-        : m_query(session)
+        : m_query(session),
+          m_dml(session)
     {
     }
 
@@ -836,12 +1810,28 @@ public:
         return m_query.select(field);
     }
 
+    CHdbDslDml& insertInto(const CHdbDslTable& table)
+    {
+        return m_dml.Reset(table, HDB_QST_INSERT);
+    }
+
+    CHdbDslDml& update(const CHdbDslTable& table)
+    {
+        return m_dml.Reset(table, HDB_QST_UPDATE);
+    }
+
+    CHdbDslDml& deleteFrom(const CHdbDslTable& table)
+    {
+        return m_dml.Reset(table, HDB_QST_DELETE);
+    }
+
 private:
     CHdbCreate(const CHdbCreate&);
     CHdbCreate& operator=(const CHdbCreate&);
 
 private:
     CHdbDslQuery m_query;
+    CHdbDslDml m_dml;
 };
 
 #endif

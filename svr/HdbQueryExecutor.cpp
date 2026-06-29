@@ -150,6 +150,47 @@ int CHdbQueryExecutor::Execute(const CHdbQueryAst& ast, CHdbQueryResult& result)
     return HDB_OK;
 }
 
+int CHdbQueryExecutor::ExecuteAffected(const CHdbQueryAst& ast, int* affectedRows)
+{
+    CHdbQuerySqlBuilder builder(m_registry);
+    HdbBuiltQuery query;
+    std::vector<const char*> params;
+    int ret;
+    int i;
+
+    if (affectedRows != NULL)
+    {
+        *affectedRows = 0;
+    }
+    m_lastOutputTypes.clear();
+    if (m_adapter == NULL)
+    {
+        SetLastError("database adapter is NULL");
+        return HDB_ERR_PARAM;
+    }
+    ret = builder.BuildExecute(ast, query);
+    if (ret != HDB_OK)
+    {
+        SetLastError(builder.GetLastError());
+        return ret;
+    }
+    params.clear();
+    for (i = 0; i < (int)query.params.size(); ++i)
+    {
+        params.push_back(query.params[i].c_str());
+    }
+    ret = m_adapter->ExecParams(query.sql.c_str(),
+        (int)params.size(),
+        params.empty() ? NULL : &params[0],
+        affectedRows);
+    if (ret != HDB_OK)
+    {
+        SetLastError(m_adapter->GetLastError());
+        return ret;
+    }
+    return HDB_OK;
+}
+
 const char* CHdbQueryExecutor::GetLastError() const
 {
     return m_lastError.c_str();

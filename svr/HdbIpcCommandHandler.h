@@ -25,6 +25,8 @@ private:
         std::vector<unsigned char>& responseFrame);
     int HandleQueryExecute(const HdbIpcFrame& requestFrame,
         std::vector<unsigned char>& responseFrame);
+    int HandleQueryExecuteAffected(const HdbIpcFrame& requestFrame,
+        std::vector<unsigned char>& responseFrame);
     // response 统一在这里组包，避免各 HandleXxx 手写 header
     int BuildIpcResponse(unsigned int command,
         unsigned int sequence,

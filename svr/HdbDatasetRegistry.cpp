@@ -70,7 +70,7 @@ static HdbDatasetDef g_hdbDatasets[] =
         sizeof(HdbRegistryDeviceModel),
         g_hdbRegistryDeviceFields,
         (int)HDB_ARRAY_COUNT(g_hdbRegistryDeviceFields),
-        { HDB_SHARD_NONE, "hdb_device", "", "", HDB_MISSING_SHARD_ERROR }
+        { HDB_SHARD_NONE, "hdb_device", "", "", HDB_MISSING_SHARD_ERROR }+
     }
 };
 
