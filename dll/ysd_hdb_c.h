@@ -80,6 +80,14 @@ HDB_API int HDB_CALL HdbQueryJoin(HDB_QUERY query,
     const char* associationName,
     int joinType,
     HDB_SOURCE* outTargetSource);
+// 通过显式 ON 字段创建 JOIN source，targetDatasetName 是逻辑数据集名
+HDB_API int HDB_CALL HdbQueryJoinOn(HDB_QUERY query,
+    HDB_SOURCE fromSource,
+    const char* targetDatasetName,
+    int joinType,
+    const char* localFieldName,
+    const char* targetFieldName,
+    HDB_SOURCE* outTargetSource);
 // 查询时间范围使用 epoch milliseconds，SERVER 侧按左闭右开范围拼条件
 HDB_API int HDB_CALL HdbQueryTimeRange(HDB_QUERY query, HdbInt64 beginMs, HdbInt64 endMs);
 // select 字段必须属于传入 source，不接受点号路径

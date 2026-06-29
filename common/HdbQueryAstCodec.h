@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#define HDB_QUERY_AST_VERSION 2 // AST 文本版本
+#define HDB_QUERY_AST_VERSION 3 // AST 文本版本
 #define HDB_QUERY_AST_MAX_BYTES (1024u * 1024u) // AST 文本字节上限
 #define HDB_QUERY_MAX_SELECT_COUNT 128 // select 最大项数
 #define HDB_QUERY_MAX_WHERE_COUNT 128 // where 最大项数

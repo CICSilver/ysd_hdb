@@ -932,6 +932,52 @@ static std::string HdbFieldArrayName(const HdbCodegenDataset& dataset)
     return "g_hdbGenerated" + HdbToPascalName(dataset.datasetName) + "Fields";
 }
 
+static std::string HdbToUpperIdentifier(const std::string& text)
+{
+    std::string value;
+    size_t i;
+
+    value.clear();
+    if (text.empty() || !(isalpha((unsigned char)text[0]) || text[0] == '_'))
+    {
+        value = "HDB_";
+    }
+    for (i = 0; i < text.size(); ++i)
+    {
+        char ch;
+
+        ch = text[i];
+        if (isalnum((unsigned char)ch))
+        {
+            value += (char)toupper((unsigned char)ch);
+        }
+        else
+        {
+            value += "_";
+        }
+    }
+    if (value.empty())
+    {
+        value = "HDB_ITEM";
+    }
+    return value;
+}
+
+static std::string HdbDslTableTypeName(const HdbCodegenDataset& dataset)
+{
+    return "CHdbGenerated" + HdbToPascalName(dataset.datasetName) + "Table";
+}
+
+static std::string HdbDslTableVarName(const HdbCodegenDataset& dataset)
+{
+    return HdbToUpperIdentifier(dataset.datasetName);
+}
+
+static std::string HdbDslFieldMemberName(const HdbCodegenColumn& column)
+{
+    return HdbToUpperIdentifier(column.columnName);
+}
+
 static std::string HdbQuote(const std::string& text)
 {
     std::string value;
@@ -952,20 +998,7 @@ static std::string HdbQuote(const std::string& text)
 
 static void HdbAppendGeneratedNotice(std::ostringstream& out)
 {
-    static const unsigned char notice[] =
-    {
-        0x2f, 0x2f, 0x20, 0xe6, 0xad, 0xa4, 0xe6, 0x96,
-        0x87, 0xe4, 0xbb, 0xb6, 0xe7, 0x94, 0xb1, 0x20,
-        0x79, 0x73, 0x64, 0x5f, 0x68, 0x64, 0x62, 0x5f,
-        0x6d, 0x65, 0x74, 0x61, 0x5f, 0x63, 0x6f, 0x64,
-        0x65, 0x67, 0x65, 0x6e, 0x20, 0xe7, 0x94, 0x9f,
-        0xe6, 0x88, 0x90, 0xef, 0xbc, 0x8c, 0xe8, 0xaf,
-        0xb7, 0xe5, 0x8b, 0xbf, 0xe6, 0x89, 0x8b, 0xe5,
-        0x8a, 0xa8, 0xe4, 0xbf, 0xae, 0xe6, 0x94, 0xb9,
-        0x0a, 0x00
-    };
-
-    out << (const char*)notice;
+    HdbAppendTextUtf8(out, "// 此文件由 ysd_hdb_meta_codegen 生成，请勿手动修改\n");
 }
 
 static void HdbAppendGeneratedHeader(std::ostringstream& out)
@@ -1117,6 +1150,52 @@ static void HdbAppendGeneratedSource(const std::vector<HdbCodegenDataset>& datas
     out << "}\n";
 }
 
+static void HdbAppendGeneratedDslHeader(const std::vector<HdbCodegenDataset>& datasets,
+    std::ostringstream& out)
+{
+    int i;
+    int j;
+
+    HdbAppendGeneratedNotice(out);
+    out << "#ifndef YSD_HDB_GENERATED_DSL_H\n";
+    out << "#define YSD_HDB_GENERATED_DSL_H\n\n";
+    out << "#include \"../dll/HdbQueryBuilder.h\"\n\n";
+    out << "namespace HdbDsl\n";
+    out << "{\n\n";
+    for (i = 0; i < (int)datasets.size(); ++i)
+    {
+        const HdbCodegenDataset& dataset = datasets[i];
+
+        out << "struct " << HdbDslTableTypeName(dataset) << " : public CHdbDslTable\n";
+        out << "{\n";
+        for (j = 0; j < (int)dataset.columns.size(); ++j)
+        {
+            out << "    CHdbDslField " << HdbDslFieldMemberName(dataset.columns[j]) << ";\n";
+        }
+        out << "\n";
+        out << "    " << HdbDslTableTypeName(dataset) << "()\n";
+        out << "        : CHdbDslTable(" << HdbQuote(dataset.datasetName) << ")";
+        for (j = 0; j < (int)dataset.columns.size(); ++j)
+        {
+            const HdbCodegenColumn& column = dataset.columns[j];
+
+            out << ",\n";
+            out << "          " << HdbDslFieldMemberName(column)
+                << "(" << HdbQuote(dataset.datasetName) << ", "
+                << HdbQuote(column.columnName) << ", "
+                << column.fieldType << ")";
+        }
+        out << "\n";
+        out << "    {\n";
+        out << "    }\n";
+        out << "};\n\n";
+        out << "static const " << HdbDslTableTypeName(dataset) << " "
+            << HdbDslTableVarName(dataset) << ";\n\n";
+    }
+    out << "}\n\n";
+    out << "#endif\n";
+}
+
 static std::string HdbNormalizeNewlines(const std::string& text)
 {
     std::string value;
@@ -1219,8 +1298,10 @@ static int HdbWriteGeneratedFiles(const HdbCodegenOptions& options,
 {
     std::ostringstream header;
     std::ostringstream source;
+    std::ostringstream dslHeader;
     std::string headerPath;
     std::string sourcePath;
+    std::string dslHeaderPath;
 
     if (!HdbMakeDir(options.outDir))
     {
@@ -1230,14 +1311,20 @@ static int HdbWriteGeneratedFiles(const HdbCodegenOptions& options,
 
     HdbAppendGeneratedHeader(header);
     HdbAppendGeneratedSource(datasets, associations, source);
+    HdbAppendGeneratedDslHeader(datasets, dslHeader);
 
     headerPath = HdbJoinPath(options.outDir, "HdbGeneratedMeta.h");
     sourcePath = HdbJoinPath(options.outDir, "HdbGeneratedMeta.cpp");
+    dslHeaderPath = HdbJoinPath(options.outDir, "HdbGeneratedDsl.h");
     if (!HdbWriteTextFile(headerPath, header.str(), error))
     {
         return 0;
     }
     if (!HdbWriteTextFile(sourcePath, source.str(), error))
+    {
+        return 0;
+    }
+    if (!HdbWriteTextFile(dslHeaderPath, dslHeader.str(), error))
     {
         return 0;
     }

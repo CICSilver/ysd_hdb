@@ -96,6 +96,8 @@ int CHdbQueryAst::AddRootSource(const char* datasetName, int* outSourceId)
     item.parentSourceId = -1;
     item.datasetName = datasetName;
     item.associationName.clear();
+    item.localFieldName.clear();
+    item.targetFieldName.clear();
     item.joinType = 0;
     sources.push_back(item);
     if (outSourceId != NULL)
@@ -128,6 +130,52 @@ int CHdbQueryAst::AddJoinSource(int parentSourceId, const char* associationName,
     item.parentSourceId = parentSourceId;
     item.datasetName.clear();
     item.associationName = associationName;
+    item.localFieldName.clear();
+    item.targetFieldName.clear();
+    item.joinType = joinType;
+    sources.push_back(item);
+    if (outSourceId != NULL)
+    {
+        *outSourceId = item.sourceId;
+    }
+    return 0;
+}
+
+int CHdbQueryAst::AddJoinSourceOn(int parentSourceId,
+    const char* targetDatasetName,
+    int joinType,
+    const char* localFieldName,
+    const char* targetFieldName,
+    int* outSourceId)
+{
+    HdbQuerySourceItem item;
+
+    if (outSourceId != NULL)
+    {
+        *outSourceId = -1;
+    }
+    if (HdbQueryTextEmpty(targetDatasetName) ||
+        HdbQueryTextEmpty(localFieldName) ||
+        HdbQueryTextEmpty(targetFieldName) ||
+        HdbQueryTextContainsDot(targetDatasetName) ||
+        HdbQueryTextContainsDot(localFieldName) ||
+        HdbQueryTextContainsDot(targetFieldName))
+    {
+        return -1;
+    }
+    if (!HdbQueryIsValidJoinType(joinType) ||
+        FindSourceIndex(parentSourceId) < 0 ||
+        sources.size() >= HDB_QUERY_MAX_SOURCE_COUNT)
+    {
+        return -1;
+    }
+    item.sourceId = (int)sources.size();
+    item.sourceType = HDB_SOURCE_JOIN;
+    item.parentSourceId = parentSourceId;
+    item.datasetName = targetDatasetName;
+    item.associationName.clear();
+    item.localFieldName = localFieldName;
+    item.targetFieldName = targetFieldName;
     item.joinType = joinType;
     sources.push_back(item);
     if (outSourceId != NULL)

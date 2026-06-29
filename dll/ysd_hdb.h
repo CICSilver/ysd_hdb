@@ -5,6 +5,7 @@
 
 #ifdef __cplusplus
 #include "HdbQueryBuilder.h"
+#include "../GeneratedMetaFiles/HdbGeneratedDsl.h"
 #endif
 
 #endif

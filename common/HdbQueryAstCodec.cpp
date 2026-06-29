@@ -88,11 +88,6 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
         }
         else if (source.sourceType == HDB_SOURCE_JOIN)
         {
-            ret = ValidateNameText(source.associationName, "association name");
-            if (ret != HDB_OK)
-            {
-                return ret;
-            }
             if (source.parentSourceId < 0 ||
                 source.parentSourceId >= source.sourceId ||
                 ValidateJoinType(source.joinType) != HDB_OK)
@@ -100,10 +95,42 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
                 SetLastError("invalid join source");
                 return HDB_ERR_QUERY_RANGE;
             }
-            out << "source=join|" << source.sourceId << "|"
-                << source.parentSourceId << "|"
-                << source.associationName << "|"
-                << source.joinType << "\n";
+            if (!source.datasetName.empty())
+            {
+                ret = ValidateNameText(source.datasetName, "join target dataset");
+                if (ret != HDB_OK)
+                {
+                    return ret;
+                }
+                ret = ValidateNameText(source.localFieldName, "join local field");
+                if (ret != HDB_OK)
+                {
+                    return ret;
+                }
+                ret = ValidateNameText(source.targetFieldName, "join target field");
+                if (ret != HDB_OK)
+                {
+                    return ret;
+                }
+                out << "source=join_on|" << source.sourceId << "|"
+                    << source.parentSourceId << "|"
+                    << source.datasetName << "|"
+                    << source.joinType << "|"
+                    << source.localFieldName << "|"
+                    << source.targetFieldName << "\n";
+            }
+            else
+            {
+                ret = ValidateNameText(source.associationName, "association name");
+                if (ret != HDB_OK)
+                {
+                    return ret;
+                }
+                out << "source=join|" << source.sourceId << "|"
+                    << source.parentSourceId << "|"
+                    << source.associationName << "|"
+                    << source.joinType << "\n";
+            }
         }
         else
         {
@@ -253,7 +280,8 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
         if (line.find("ast_version=") == 0)
         {
             int version;
-            if (ParseInt32Strict(line.substr(12), &version) != HDB_OK || version != HDB_QUERY_AST_VERSION)
+            if (ParseInt32Strict(line.substr(12), &version) != HDB_OK ||
+                (version != HDB_QUERY_AST_VERSION && version != 2))
             {
                 SetLastError("unsupported query ast version");
                 return HDB_ERR_PARAM;
@@ -303,6 +331,28 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
                     addedSourceId != sourceId)
                 {
                     SetLastError("invalid join source");
+                    return HDB_ERR_QUERY_RANGE;
+                }
+            }
+            else if (fields[0] == "join_on")
+            {
+                if (fields.size() != 7 ||
+                    ParseInt32Strict(fields[1], &sourceId) != HDB_OK ||
+                    ParseInt32Strict(fields[2], &parentSourceId) != HDB_OK ||
+                    ValidateNameText(fields[3], "join target dataset") != HDB_OK ||
+                    ParseInt32Strict(fields[4], &joinType) != HDB_OK ||
+                    ValidateJoinType(joinType) != HDB_OK ||
+                    ValidateNameText(fields[5], "join local field") != HDB_OK ||
+                    ValidateNameText(fields[6], "join target field") != HDB_OK ||
+                    outAst.AddJoinSourceOn(parentSourceId,
+                        fields[3].c_str(),
+                        joinType,
+                        fields[5].c_str(),
+                        fields[6].c_str(),
+                        &addedSourceId) != 0 ||
+                    addedSourceId != sourceId)
+                {
+                    SetLastError("invalid join on source");
                     return HDB_ERR_QUERY_RANGE;
                 }
             }

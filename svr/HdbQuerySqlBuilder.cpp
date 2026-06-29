@@ -317,43 +317,80 @@ int CHdbQuerySqlBuilder::ResolveSources(const CHdbQueryAst& ast, std::vector<Res
                 SetLastError("join parent source is missing");
                 return HDB_ERR_FIELD_REF;
             }
-            if (m_registry->ValidateIdentifier(source.associationName.c_str()) != HDB_OK)
+            if (!source.datasetName.empty())
             {
-                SetLastError(m_registry->GetLastError());
-                return HDB_ERR_ASSOCIATION_NOT_FOUND;
+                if (m_registry->ValidateIdentifier(source.datasetName.c_str()) != HDB_OK ||
+                    m_registry->ValidateIdentifier(source.localFieldName.c_str()) != HDB_OK ||
+                    m_registry->ValidateIdentifier(source.targetFieldName.c_str()) != HDB_OK)
+                {
+                    SetLastError(m_registry->GetLastError());
+                    return HDB_ERR_FIELD_REF;
+                }
+                targetDataset = m_registry->FindDataset(source.datasetName.c_str());
+                if (targetDataset == NULL)
+                {
+                    SetLastError("join target dataset is not found");
+                    return HDB_ERR_DATASET_NOT_FOUND;
+                }
+                ret = ValidateJoinTargetDataset(*targetDataset);
+                if (ret != HDB_OK)
+                {
+                    return ret;
+                }
+                resolved.dataset = targetDataset;
+                resolved.localField = m_registry->FindField(*parentSource->dataset, source.localFieldName.c_str());
+                resolved.targetField = m_registry->FindField(*targetDataset, source.targetFieldName.c_str());
+                if (resolved.localField == NULL || resolved.targetField == NULL)
+                {
+                    SetLastError("join on field is missing");
+                    return HDB_ERR_FIELD_NOT_FOUND;
+                }
+                if (resolved.localField->type != resolved.targetField->type)
+                {
+                    SetLastError("join on field type mismatch");
+                    return HDB_ERR_TYPE_MISMATCH;
+                }
             }
-            association = m_registry->FindAssociation(parentSource->dataset->datasetName,
-                source.associationName.c_str());
-            if (association == NULL)
+            else
             {
-                SetLastError("association is not found");
-                return HDB_ERR_ASSOCIATION_NOT_FOUND;
-            }
-            ret = m_registry->ValidateAssociation(*association);
-            if (ret != HDB_OK)
-            {
-                SetLastError(m_registry->GetLastError());
-                return ret;
-            }
-            targetDataset = m_registry->FindDataset(association->targetDataset);
-            if (targetDataset == NULL)
-            {
-                SetLastError("association target dataset is missing");
-                return HDB_ERR_ASSOCIATION_NOT_FOUND;
-            }
-            ret = ValidateJoinTargetDataset(*targetDataset);
-            if (ret != HDB_OK)
-            {
-                return ret;
-            }
-            resolved.association = association;
-            resolved.dataset = targetDataset;
-            resolved.localField = m_registry->FindField(*parentSource->dataset, association->localFieldName);
-            resolved.targetField = m_registry->FindField(*targetDataset, association->targetFieldName);
-            if (resolved.localField == NULL || resolved.targetField == NULL)
-            {
-                SetLastError("association field is missing");
-                return HDB_ERR_ASSOCIATION_NOT_FOUND;
+                if (m_registry->ValidateIdentifier(source.associationName.c_str()) != HDB_OK)
+                {
+                    SetLastError(m_registry->GetLastError());
+                    return HDB_ERR_ASSOCIATION_NOT_FOUND;
+                }
+                association = m_registry->FindAssociation(parentSource->dataset->datasetName,
+                    source.associationName.c_str());
+                if (association == NULL)
+                {
+                    SetLastError("association is not found");
+                    return HDB_ERR_ASSOCIATION_NOT_FOUND;
+                }
+                ret = m_registry->ValidateAssociation(*association);
+                if (ret != HDB_OK)
+                {
+                    SetLastError(m_registry->GetLastError());
+                    return ret;
+                }
+                targetDataset = m_registry->FindDataset(association->targetDataset);
+                if (targetDataset == NULL)
+                {
+                    SetLastError("association target dataset is missing");
+                    return HDB_ERR_ASSOCIATION_NOT_FOUND;
+                }
+                ret = ValidateJoinTargetDataset(*targetDataset);
+                if (ret != HDB_OK)
+                {
+                    return ret;
+                }
+                resolved.association = association;
+                resolved.dataset = targetDataset;
+                resolved.localField = m_registry->FindField(*parentSource->dataset, association->localFieldName);
+                resolved.targetField = m_registry->FindField(*targetDataset, association->targetFieldName);
+                if (resolved.localField == NULL || resolved.targetField == NULL)
+                {
+                    SetLastError("association field is missing");
+                    return HDB_ERR_ASSOCIATION_NOT_FOUND;
+                }
             }
         }
         else

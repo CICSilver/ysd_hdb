@@ -29,8 +29,10 @@ struct HdbQuerySourceItem
     int sourceId;                 // query 内 source 编号
     int sourceType;               // HdbQuerySourceType
     int parentSourceId;           // JOIN 的父 source，ROOT 固定为 -1
-    std::string datasetName;      // ROOT 数据集名，JOIN 由 SERVER 根据 Association 推导
-    std::string associationName;  // JOIN 使用的命名 Association
+    std::string datasetName;      // ROOT 数据集名，显式 ON JOIN 时为目标数据集名
+    std::string associationName;  // 旧 Association JOIN 使用的命名关系
+    std::string localFieldName;   // 显式 ON JOIN 的父 source 字段
+    std::string targetFieldName;  // 显式 ON JOIN 的目标 source 字段
     int joinType;                 // HdbJoinType，ROOT 固定为 0
 };
 
@@ -69,6 +71,12 @@ public:
     void Clear();
     int AddRootSource(const char* datasetName, int* outSourceId);
     int AddJoinSource(int parentSourceId, const char* associationName, int joinType, int* outSourceId);
+    int AddJoinSourceOn(int parentSourceId,
+        const char* targetDatasetName,
+        int joinType,
+        const char* localFieldName,
+        const char* targetFieldName,
+        int* outSourceId);
     int AddSelect(int sourceId, const char* fieldName, const char* outputName);
     int AddWhereInt32(int sourceId, const char* fieldName, int op, int value);
     int AddWhereInt64(int sourceId, const char* fieldName, int op, HdbQueryInt64 value);

@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string>
 #include <time.h>
 #include <windows.h>
 
@@ -162,6 +163,19 @@ static int ExpectHdbError(HDB_SESSION session, int ret, int expected, const char
     }
     PrintSessionError(session, stage, ret);
     printf("%s expected ret=%d\n", stage, expected);
+    return 1;
+}
+
+static int ExpectQueryStep(HDB_SESSION session, HDB_QUERY query, int ret, const char* stage)
+{
+    if (ExpectHdbOk(session, ret, stage) == 0)
+    {
+        return 0;
+    }
+    if (query != NULL)
+    {
+        HdbQueryFree(query);
+    }
     return 1;
 }
 
@@ -359,123 +373,90 @@ static int RunPingSmoke(HDB_SESSION session)
     return 0;
 }
 
-// 测试 Builder 链式值对象的本地边界
-static int RunBuilderApiSmoke(HDB_SESSION session)
-{
-    CHdbSource emptySource;
-    CHdbFieldRef emptyField;
-    HDB_RESULT result;
-    int ret;
-
-    PrintTestTitle("Builder 链式 API", "覆盖值对象 source 和 field 的本地边界检查");
-
-    {
-        CHdbQueryBuilder query(session);
-        CHdbSource joinedSource;
-
-        joinedSource = query.LeftJoin(emptySource, "point");
-        if (query.GetError() != HDB_ERR_PARAM || joinedSource.IsValid() != 0)
-        {
-            PrintFail("default source rejected");
-            printf("ret=%d joinedValid=%d\n", query.GetError(), joinedSource.IsValid());
-            return 1;
-        }
-    }
-
-    {
-        CHdbQueryBuilder query(session);
-
-        result = (HDB_RESULT)&ret;
-        query.Select(emptyField, "badField");
-        ret = query.Execute(&result);
-        if (ret != HDB_ERR_PARAM || result != NULL)
-        {
-            PrintFail("default field rejected");
-            printf("ret=%d result=%p\n", ret, (void*)result);
-            return 1;
-        }
-    }
-
-    {
-        CHdbQueryBuilder firstQuery(session);
-        CHdbQueryBuilder secondQuery(session);
-        CHdbSource alarmSource;
-
-        alarmSource = firstQuery.From("alarm");
-        if (firstQuery.GetError() != HDB_OK || alarmSource.IsValid() == 0)
-        {
-            PrintFail("builder source create");
-            printf("ret=%d sourceValid=%d\n", firstQuery.GetError(), alarmSource.IsValid());
-            return 1;
-        }
-        secondQuery.Select(alarmSource.Field("id"), "id");
-        if (secondQuery.GetError() != HDB_ERR_PARAM)
-        {
-            PrintFail("cross builder field rejected");
-            printf("ret=%d\n", secondQuery.GetError());
-            return 1;
-        }
-    }
-
-    {
-        CHdbQueryBuilder firstQuery(session);
-        CHdbQueryBuilder secondQuery(session);
-        CHdbSource alarmSource;
-        CHdbSource joinedSource;
-
-        alarmSource = firstQuery.From("alarm");
-        if (firstQuery.GetError() != HDB_OK || alarmSource.IsValid() == 0)
-        {
-            PrintFail("builder join source create");
-            printf("ret=%d sourceValid=%d\n", firstQuery.GetError(), alarmSource.IsValid());
-            return 1;
-        }
-        joinedSource = secondQuery.LeftJoin(alarmSource, "point");
-        if (secondQuery.GetError() != HDB_ERR_PARAM || joinedSource.IsValid() != 0)
-        {
-            PrintFail("cross builder source rejected");
-            printf("ret=%d joinedValid=%d\n", secondQuery.GetError(), joinedSource.IsValid());
-            return 1;
-        }
-    }
-
-    PrintOk("Builder 链式 API 检查通过");
-    return 0;
-}
-
 // 测试日分片查询和两级关联
 static int RunHistoryQuerySmoke(HDB_SESSION session)
 {
-    CHdbQueryBuilder query(session);
-    CHdbSource alarmSource;
-    CHdbSource pointSource;
-    CHdbSource deviceSource;
+    HDB_QUERY query;
+    HDB_SOURCE alarmSource;
+    HDB_SOURCE pointSource;
+    HDB_SOURCE deviceSource;
     HDB_RESULT result;
     int ret;
 
     PrintTestTitle("历史查询", "覆盖日分片查询、两级关联、NULL 和类型读取");
+    query = NULL;
+    alarmSource = NULL;
+    pointSource = NULL;
+    deviceSource = NULL;
     result = NULL;
 
-    alarmSource = query.From("alarm");
-    pointSource = query.LeftJoin(alarmSource, "point");
-    deviceSource = query.LeftJoin(pointSource, "device");
-    query
-        .Select(alarmSource.Field("id"), "id")
-        .Select(alarmSource.Field("level"), "level")
-        .Select(alarmSource.Field("occur_time"), "time")
-        .Select(pointSource.Field("name"), "pointName")
-        .Select(deviceSource.Field("name"), "deviceName")
-        .WhereInt32(alarmSource.Field("level"), HDB_OP_GE, 2)
-        .OrderBy(alarmSource.Field("occur_time"), HDB_ORDER_DESC)
-        .TimeRange(MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 14, 0, 0, 0, 0))
-        .Limit(10, 0);
-
-    ret = query.GetError();
-    if (ExpectHdbOk(session, ret, "build history query") != 0)
+    ret = HdbQueryCreate(session, &query);
+    if (ExpectHdbOk(session, ret, "create history query") != 0)
     {
         return 1;
     }
-    ret = query.Execute(&result);
+    ret = HdbQueryFrom(query, "alarm", &alarmSource);
+    if (ExpectQueryStep(session, query, ret, "history from alarm") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryJoin(query, alarmSource, "point", HDB_JOIN_LEFT, &pointSource);
+    if (ExpectQueryStep(session, query, ret, "history join point") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryJoin(query, pointSource, "device", HDB_JOIN_LEFT, &deviceSource);
+    if (ExpectQueryStep(session, query, ret, "history join device") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQuerySelect(query, alarmSource, "id", "id");
+    if (ExpectQueryStep(session, query, ret, "history select id") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQuerySelect(query, alarmSource, "level", "level");
+    if (ExpectQueryStep(session, query, ret, "history select level") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQuerySelect(query, alarmSource, "occur_time", "time");
+    if (ExpectQueryStep(session, query, ret, "history select time") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQuerySelect(query, pointSource, "name", "pointName");
+    if (ExpectQueryStep(session, query, ret, "history select point") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQuerySelect(query, deviceSource, "name", "deviceName");
+    if (ExpectQueryStep(session, query, ret, "history select device") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryWhereInt32(query, alarmSource, "level", HDB_OP_GE, 2);
+    if (ExpectQueryStep(session, query, ret, "history where level") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryOrderBy(query, alarmSource, "occur_time", HDB_ORDER_DESC);
+    if (ExpectQueryStep(session, query, ret, "history order time") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryTimeRange(query, MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 14, 0, 0, 0, 0));
+    if (ExpectQueryStep(session, query, ret, "history time range") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryLimit(query, 10, 0);
+    if (ExpectQueryStep(session, query, ret, "history limit") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryExecute(query, &result);
+    HdbQueryFree(query);
     if (ExpectHdbOk(session, ret, "execute history query") != 0)
     {
         return 1;
@@ -500,32 +481,129 @@ static int RunHistoryQuerySmoke(HDB_SESSION session)
     return 0;
 }
 
+// 测试生成 DSL 链式查询
+static int RunDslQuerySmoke(HDB_SESSION session)
+{
+    CHdbCreate create(session);
+    CHdbDslResult result;
+    HdbInt64 alarmId;
+    std::string pointName;
+    int hasRow;
+    int ret;
+
+    PrintTestTitle("DSL 查询", "覆盖生成字段、显式 JOIN 和字段读取");
+    alarmId = 0;
+    hasRow = 0;
+
+    ret = create.select(HdbDsl::ALARM.ID)
+        .select(HdbDsl::POINT.NAME)
+        .from(HdbDsl::ALARM)
+        .leftJoin(HdbDsl::POINT)
+        .on(HdbDsl::ALARM.POINT_ID.eq(HdbDsl::POINT.ID))
+        .where(HdbDsl::ALARM.ID.eq((HdbInt64)1))
+        .timeRange(MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 13, 0, 0, 0, 0))
+        .fetch(&result);
+    if (ExpectHdbOk(session, ret, "execute dsl query") != 0)
+    {
+        return 1;
+    }
+    ret = result.Next(&hasRow);
+    if (ExpectHdbOk(session, ret, "dsl row 1") != 0)
+    {
+        return 1;
+    }
+    if (hasRow != 1)
+    {
+        PrintFail("dsl row 1");
+        printf("hasRow=%d expected=1\n", hasRow);
+        return 1;
+    }
+    ret = result.Get(HdbDsl::ALARM.ID, alarmId);
+    if (ExpectHdbOk(session, ret, "dsl alarm id") != 0)
+    {
+        return 1;
+    }
+    ret = result.Get(HdbDsl::POINT.NAME, pointName);
+    if (ExpectHdbOk(session, ret, "dsl point name") != 0)
+    {
+        return 1;
+    }
+    if (alarmId != 1 || pointName != "point A")
+    {
+        PrintFail("dsl values");
+        printf("alarmId mismatch or pointName mismatch\n");
+        return 1;
+    }
+    ret = result.Next(&hasRow);
+    if (ExpectHdbOk(session, ret, "dsl row end") != 0)
+    {
+        return 1;
+    }
+    if (hasRow != 0)
+    {
+        PrintFail("dsl row end");
+        printf("hasRow=%d expected=0\n", hasRow);
+        return 1;
+    }
+    PrintOk("DSL 查询通过");
+    return 0;
+}
+
 // 测试时间字段条件
 static int RunTimestampWhereSmoke(HDB_SESSION session)
 {
-    CHdbQueryBuilder query(session);
-    CHdbSource alarmSource;
+    HDB_QUERY query;
+    HDB_SOURCE alarmSource;
     HDB_RESULT result;
     int ret;
 
     PrintTestTitle("时间条件", "覆盖时间字段 where 条件和分片过滤");
+    query = NULL;
+    alarmSource = NULL;
     result = NULL;
 
-    alarmSource = query.From("alarm");
-    query
-        .TimeRange(MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 14, 0, 0, 0, 0))
-        .Select(alarmSource.Field("id"), "id")
-        .Select(alarmSource.Field("occur_time"), "time")
-        .WhereInt64(alarmSource.Field("occur_time"), HDB_OP_GE, MakeLocalTimeMs(2026, 6, 13, 0, 0, 0, 0))
-        .OrderBy(alarmSource.Field("occur_time"), HDB_ORDER_DESC)
-        .Limit(10, 0);
-
-    ret = query.GetError();
-    if (ExpectHdbOk(session, ret, "build timestamp query") != 0)
+    ret = HdbQueryCreate(session, &query);
+    if (ExpectHdbOk(session, ret, "create timestamp query") != 0)
     {
         return 1;
     }
-    ret = query.Execute(&result);
+    ret = HdbQueryFrom(query, "alarm", &alarmSource);
+    if (ExpectQueryStep(session, query, ret, "timestamp from alarm") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryTimeRange(query, MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 14, 0, 0, 0, 0));
+    if (ExpectQueryStep(session, query, ret, "timestamp time range") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQuerySelect(query, alarmSource, "id", "id");
+    if (ExpectQueryStep(session, query, ret, "timestamp select id") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQuerySelect(query, alarmSource, "occur_time", "time");
+    if (ExpectQueryStep(session, query, ret, "timestamp select time") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryWhereInt64(query, alarmSource, "occur_time", HDB_OP_GE, MakeLocalTimeMs(2026, 6, 13, 0, 0, 0, 0));
+    if (ExpectQueryStep(session, query, ret, "timestamp where time") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryOrderBy(query, alarmSource, "occur_time", HDB_ORDER_DESC);
+    if (ExpectQueryStep(session, query, ret, "timestamp order time") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryLimit(query, 10, 0);
+    if (ExpectQueryStep(session, query, ret, "timestamp limit") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryExecute(query, &result);
+    HdbQueryFree(query);
     if (ExpectHdbOk(session, ret, "execute timestamp query") != 0)
     {
         return 1;
@@ -545,28 +623,53 @@ static int RunTimestampWhereSmoke(HDB_SESSION session)
 // 测试固定表查询和 LIKE
 static int RunPointQuerySmoke(HDB_SESSION session)
 {
-    CHdbQueryBuilder query(session);
-    CHdbSource pointSource;
+    HDB_QUERY query;
+    HDB_SOURCE pointSource;
     HDB_RESULT result;
     int ret;
 
     PrintTestTitle("固定表查询", "覆盖固定表 dataset 查询和 LIKE 条件");
+    query = NULL;
+    pointSource = NULL;
     result = NULL;
 
-    pointSource = query.From("point");
-    query
-        .Select(pointSource.Field("id"), "id")
-        .Select(pointSource.Field("name"), "pointName")
-        .WhereStringLike(pointSource.Field("name"), "point%")
-        .OrderBy(pointSource.Field("name"), HDB_ORDER_ASC)
-        .Limit(3, 0);
-
-    ret = query.GetError();
-    if (ExpectHdbOk(session, ret, "build point query") != 0)
+    ret = HdbQueryCreate(session, &query);
+    if (ExpectHdbOk(session, ret, "create point query") != 0)
     {
         return 1;
     }
-    ret = query.Execute(&result);
+    ret = HdbQueryFrom(query, "point", &pointSource);
+    if (ExpectQueryStep(session, query, ret, "point from point") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQuerySelect(query, pointSource, "id", "id");
+    if (ExpectQueryStep(session, query, ret, "point select id") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQuerySelect(query, pointSource, "name", "pointName");
+    if (ExpectQueryStep(session, query, ret, "point select name") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryWhereStringLike(query, pointSource, "name", "point%");
+    if (ExpectQueryStep(session, query, ret, "point like name") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryOrderBy(query, pointSource, "name", HDB_ORDER_ASC);
+    if (ExpectQueryStep(session, query, ret, "point order name") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryLimit(query, 3, 0);
+    if (ExpectQueryStep(session, query, ret, "point limit") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryExecute(query, &result);
+    HdbQueryFree(query);
     if (ExpectHdbOk(session, ret, "execute point query") != 0)
     {
         return 1;
@@ -667,16 +770,12 @@ int main(int argc, char* argv[])
     printf("ysd_hdb smoke test\n");
     printf("conninfo: %s\n", connInfo);
 
-    // 打开 DLL 会话并先检查 Builder 本地边界
+    // 打开 DLL 会话并检查 SERVER 连接
     ret = HdbOpen(NULL, &session);
     if (ret != HDB_OK)
     {
         PrintFail("HdbOpen failed");
         printf("ret=%d\n", ret);
-        goto done;
-    }
-    if (RunBuilderApiSmoke(session) != 0)
-    {
         goto done;
     }
     if (RunPingSmoke(session) != 0)
@@ -694,6 +793,7 @@ int main(int argc, char* argv[])
 
     // 走 DLL 查询链路
     if (RunHistoryQuerySmoke(session) != 0 ||
+        RunDslQuerySmoke(session) != 0 ||
         RunTimestampWhereSmoke(session) != 0 ||
         RunPointQuerySmoke(session) != 0)
     {

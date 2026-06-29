@@ -964,6 +964,57 @@ static int HdbQueryJoinImpl(HDB_QUERY query,
     return ret;
 }
 
+static int HdbQueryJoinOnImpl(HDB_QUERY query,
+    HDB_SOURCE fromSource,
+    const char* targetDatasetName,
+    int joinType,
+    const char* localFieldName,
+    const char* targetFieldName,
+    HDB_SOURCE* outTargetSource)
+{
+    int parentSourceId;
+    int targetSourceId;
+    int ret;
+
+    if (outTargetSource != NULL)
+    {
+        *outTargetSource = NULL;
+    }
+    if (query == NULL ||
+        fromSource == NULL ||
+        targetDatasetName == NULL ||
+        targetDatasetName[0] == '\0' ||
+        localFieldName == NULL ||
+        localFieldName[0] == '\0' ||
+        targetFieldName == NULL ||
+        targetFieldName[0] == '\0' ||
+        outTargetSource == NULL)
+    {
+        return HDB_ERR_PARAM;
+    }
+    ret = HdbDllValidateQuerySource(query, fromSource, &parentSourceId);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (query->ast.AddJoinSourceOn(parentSourceId,
+        targetDatasetName,
+        joinType,
+        localFieldName,
+        targetFieldName,
+        &targetSourceId) != 0)
+    {
+        HdbDllSetQueryError(query, "invalid query join on source");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    ret = HdbDllCreateQuerySource(query, targetSourceId, outTargetSource);
+    if (ret != HDB_OK && !query->ast.sources.empty())
+    {
+        query->ast.sources.pop_back();
+    }
+    return ret;
+}
+
 static int HdbQueryTimeRangeImpl(HDB_QUERY query, HdbInt64 beginMs, HdbInt64 endMs)
 {
     if (query == NULL)
@@ -1701,6 +1752,46 @@ int HDB_CALL HdbQueryJoin(HDB_QUERY query,
     try
     {
         return HdbQueryJoinImpl(query, fromSource, associationName, joinType, outTargetSource);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (outTargetSource != NULL)
+        {
+            *outTargetSource = NULL;
+        }
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        if (outTargetSource != NULL)
+        {
+            *outTargetSource = NULL;
+        }
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbQueryJoinOn(HDB_QUERY query,
+    HDB_SOURCE fromSource,
+    const char* targetDatasetName,
+    int joinType,
+    const char* localFieldName,
+    const char* targetFieldName,
+    HDB_SOURCE* outTargetSource)
+{
+    if (outTargetSource != NULL)
+    {
+        *outTargetSource = NULL;
+    }
+    try
+    {
+        return HdbQueryJoinOnImpl(query,
+            fromSource,
+            targetDatasetName,
+            joinType,
+            localFieldName,
+            targetFieldName,
+            outTargetSource);
     }
     catch (const std::bad_alloc&)
     {
