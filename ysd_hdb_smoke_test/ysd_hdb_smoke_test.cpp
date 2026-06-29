@@ -383,7 +383,7 @@ static int RunHistoryQuerySmoke(HDB_SESSION session)
     HDB_RESULT result;
     int ret;
 
-    PrintTestTitle("历史查询", "覆盖日分片查询、两级关联、NULL 和类型读取");
+    PrintTestTitle("历史查询", "覆盖日分片查询、两级联查、NULL 和类型读取");
     query = NULL;
     alarmSource = NULL;
     pointSource = NULL;
@@ -400,12 +400,12 @@ static int RunHistoryQuerySmoke(HDB_SESSION session)
     {
         return 1;
     }
-    ret = HdbQueryJoin(query, alarmSource, "point", HDB_JOIN_LEFT, &pointSource);
+    ret = HdbQueryJoinOn(query, alarmSource, "point", HDB_JOIN_LEFT, "point_id", "id", &pointSource);
     if (ExpectQueryStep(session, query, ret, "history join point") != 0)
     {
         return 1;
     }
-    ret = HdbQueryJoin(query, pointSource, "device", HDB_JOIN_LEFT, &deviceSource);
+    ret = HdbQueryJoinOn(query, pointSource, "device", HDB_JOIN_LEFT, "device_id", "id", &deviceSource);
     if (ExpectQueryStep(session, query, ret, "history join device") != 0)
     {
         return 1;
@@ -499,8 +499,8 @@ static int RunDslQuerySmoke(HDB_SESSION session)
         .select(HdbDsl::POINT.NAME)
         .from(HdbDsl::ALARM)
         .leftJoin(HdbDsl::POINT)
-        .on(HdbDsl::ALARM.POINT_ID.eq(HdbDsl::POINT.ID))
-        .where(HdbDsl::ALARM.ID.eq((HdbInt64)1).And(HdbDsl::POINT.NAME.like("point%")))
+        .on(HdbDsl::ALARM.POINT_ID.eq(HdbDsl::POINT.ID).And(HdbDsl::POINT.NAME.like("point%")))
+        .where(HdbDsl::ALARM.ID.eq((HdbInt64)1).And(HdbDsl::ALARM.POINT_ID.eq(HdbDsl::POINT.ID)))
         .orderBy(HdbDsl::ALARM.ID.asc())
         .timeRange(MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 13, 0, 0, 0, 0))
         .fetch(&result);

@@ -70,18 +70,23 @@ public:
     CHdbDslCondition ne(double value) const;
     CHdbDslCondition ne(const char* value) const;
     CHdbDslCondition ne(const std::string& value) const;
+    CHdbDslCondition ne(const CHdbDslField& right) const;
     CHdbDslCondition gt(int value) const;
     CHdbDslCondition gt(HdbInt64 value) const;
     CHdbDslCondition gt(double value) const;
+    CHdbDslCondition gt(const CHdbDslField& right) const;
     CHdbDslCondition ge(int value) const;
     CHdbDslCondition ge(HdbInt64 value) const;
     CHdbDslCondition ge(double value) const;
+    CHdbDslCondition ge(const CHdbDslField& right) const;
     CHdbDslCondition lt(int value) const;
     CHdbDslCondition lt(HdbInt64 value) const;
     CHdbDslCondition lt(double value) const;
+    CHdbDslCondition lt(const CHdbDslField& right) const;
     CHdbDslCondition le(int value) const;
     CHdbDslCondition le(HdbInt64 value) const;
     CHdbDslCondition le(double value) const;
+    CHdbDslCondition le(const CHdbDslField& right) const;
     CHdbDslCondition like(const char* value) const;
     CHdbDslCondition like(const std::string& value) const;
     CHdbDslCondition isNull() const;
@@ -465,6 +470,11 @@ inline CHdbDslCondition CHdbDslField::ne(const std::string& value) const
     return CHdbDslCondition(*this, HDB_OP_NE, HDB_QVT_STRING, value);
 }
 
+inline CHdbDslCondition CHdbDslField::ne(const CHdbDslField& right) const
+{
+    return CHdbDslCondition(*this, HDB_OP_NE, right);
+}
+
 inline CHdbDslCondition CHdbDslField::gt(int value) const
 {
     if (HdbDslIntegerValueTypeForField(*this) == HDB_QVT_INT64)
@@ -482,6 +492,11 @@ inline CHdbDslCondition CHdbDslField::gt(HdbInt64 value) const
 inline CHdbDslCondition CHdbDslField::gt(double value) const
 {
     return CHdbDslCondition(*this, HDB_OP_GT, HDB_QVT_DOUBLE, HdbDslDoubleToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::gt(const CHdbDslField& right) const
+{
+    return CHdbDslCondition(*this, HDB_OP_GT, right);
 }
 
 inline CHdbDslCondition CHdbDslField::ge(int value) const
@@ -503,6 +518,11 @@ inline CHdbDslCondition CHdbDslField::ge(double value) const
     return CHdbDslCondition(*this, HDB_OP_GE, HDB_QVT_DOUBLE, HdbDslDoubleToText(value));
 }
 
+inline CHdbDslCondition CHdbDslField::ge(const CHdbDslField& right) const
+{
+    return CHdbDslCondition(*this, HDB_OP_GE, right);
+}
+
 inline CHdbDslCondition CHdbDslField::lt(int value) const
 {
     if (HdbDslIntegerValueTypeForField(*this) == HDB_QVT_INT64)
@@ -522,6 +542,11 @@ inline CHdbDslCondition CHdbDslField::lt(double value) const
     return CHdbDslCondition(*this, HDB_OP_LT, HDB_QVT_DOUBLE, HdbDslDoubleToText(value));
 }
 
+inline CHdbDslCondition CHdbDslField::lt(const CHdbDslField& right) const
+{
+    return CHdbDslCondition(*this, HDB_OP_LT, right);
+}
+
 inline CHdbDslCondition CHdbDslField::le(int value) const
 {
     if (HdbDslIntegerValueTypeForField(*this) == HDB_QVT_INT64)
@@ -539,6 +564,11 @@ inline CHdbDslCondition CHdbDslField::le(HdbInt64 value) const
 inline CHdbDslCondition CHdbDslField::le(double value) const
 {
     return CHdbDslCondition(*this, HDB_OP_LE, HDB_QVT_DOUBLE, HdbDslDoubleToText(value));
+}
+
+inline CHdbDslCondition CHdbDslField::le(const CHdbDslField& right) const
+{
+    return CHdbDslCondition(*this, HDB_OP_LE, right);
 }
 
 inline CHdbDslCondition CHdbDslField::like(const char* value) const
@@ -1026,7 +1056,7 @@ public:
     {
         if (m_error == HDB_OK)
         {
-            if (!condition.IsValid() || condition.IsFieldCompare() || m_hasWhere)
+            if (!condition.IsValid() || m_hasWhere)
             {
                 m_error = HDB_ERR_QUERY_RANGE;
             }
@@ -1229,57 +1259,233 @@ private:
         return NULL;
     }
 
+    int ResolveOnField(const CHdbDslField& field,
+        const char* targetDatasetName,
+        int* outIsTarget,
+        HDB_SOURCE* outSource) const
+    {
+        HDB_SOURCE source;
+
+        if (outIsTarget != NULL)
+        {
+            *outIsTarget = 0;
+        }
+        if (outSource != NULL)
+        {
+            *outSource = NULL;
+        }
+        if (!field.IsValid() || targetDatasetName == NULL)
+        {
+            return HDB_ERR_FIELD_REF;
+        }
+        if (strcmp(field.DatasetName(), targetDatasetName) == 0)
+        {
+            if (outIsTarget != NULL)
+            {
+                *outIsTarget = 1;
+            }
+            return HDB_OK;
+        }
+        source = FindSource(field.DatasetName());
+        if (source == NULL)
+        {
+            return HDB_ERR_FIELD_REF;
+        }
+        if (outSource != NULL)
+        {
+            *outSource = source;
+        }
+        return HDB_OK;
+    }
+
+    int BuildOnBranchAnchors(const CHdbDslCondition& condition,
+        const char* targetDatasetName,
+        std::vector<int>& branchAnchors,
+        HDB_SOURCE* outParentSource) const
+    {
+        int leftIsTarget;
+        int rightIsTarget;
+        HDB_SOURCE leftSource;
+        HDB_SOURCE rightSource;
+        int anchored;
+        int ret;
+        int i;
+
+        branchAnchors.clear();
+        if (!condition.IsValid())
+        {
+            return HDB_ERR_QUERY_RANGE;
+        }
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_GROUP)
+        {
+            std::vector<int> currentAnchors;
+
+            for (i = 0; i < (int)condition.Children().size(); ++i)
+            {
+                std::vector<int> childAnchors;
+
+                ret = BuildOnBranchAnchors(condition.Children()[i],
+                    targetDatasetName,
+                    childAnchors,
+                    outParentSource);
+                if (ret != HDB_OK)
+                {
+                    return ret;
+                }
+                if (condition.Logic() == HDB_QCL_OR)
+                {
+                    branchAnchors.insert(branchAnchors.end(), childAnchors.begin(), childAnchors.end());
+                }
+                else if (currentAnchors.empty())
+                {
+                    currentAnchors = childAnchors;
+                }
+                else
+                {
+                    std::vector<int> mergedAnchors;
+                    int leftIndex;
+                    int rightIndex;
+
+                    for (leftIndex = 0; leftIndex < (int)currentAnchors.size(); ++leftIndex)
+                    {
+                        for (rightIndex = 0; rightIndex < (int)childAnchors.size(); ++rightIndex)
+                        {
+                            mergedAnchors.push_back(currentAnchors[leftIndex] || childAnchors[rightIndex]);
+                        }
+                    }
+                    currentAnchors = mergedAnchors;
+                }
+            }
+            if (condition.Logic() == HDB_QCL_AND)
+            {
+                branchAnchors = currentAnchors;
+            }
+            return branchAnchors.empty() ? HDB_ERR_QUERY_RANGE : HDB_OK;
+        }
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_NULL ||
+            condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_BETWEEN ||
+            condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_IN)
+        {
+            return HDB_ERR_QUERY_RANGE;
+        }
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_COMPARE)
+        {
+            ret = ResolveOnField(condition.LeftField(), targetDatasetName, &leftIsTarget, &leftSource);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            branchAnchors.push_back(0);
+            return HDB_OK;
+        }
+        if (condition.Kind() != CHdbDslCondition::HDB_DSL_CONDITION_FIELD_COMPARE)
+        {
+            return HDB_ERR_QUERY_RANGE;
+        }
+        ret = ResolveOnField(condition.LeftField(), targetDatasetName, &leftIsTarget, &leftSource);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = ResolveOnField(condition.RightField(), targetDatasetName, &rightIsTarget, &rightSource);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        anchored = 0;
+        if (leftIsTarget && rightSource != NULL)
+        {
+            anchored = 1;
+            if (outParentSource != NULL && *outParentSource == NULL)
+            {
+                *outParentSource = rightSource;
+            }
+        }
+        else if (rightIsTarget && leftSource != NULL)
+        {
+            anchored = 1;
+            if (outParentSource != NULL && *outParentSource == NULL)
+            {
+                *outParentSource = leftSource;
+            }
+        }
+        branchAnchors.push_back(anchored);
+        return HDB_OK;
+    }
+
+    int ValidateJoinOnCondition(const CHdbDslCondition& condition,
+        const char* targetDatasetName,
+        HDB_SOURCE* outParentSource) const
+    {
+        std::vector<int> branchAnchors;
+        int ret;
+        int i;
+
+        if (outParentSource != NULL)
+        {
+            *outParentSource = NULL;
+        }
+        ret = BuildOnBranchAnchors(condition, targetDatasetName, branchAnchors, outParentSource);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        if (outParentSource == NULL || *outParentSource == NULL)
+        {
+            return HDB_ERR_QUERY_RANGE;
+        }
+        for (i = 0; i < (int)branchAnchors.size(); ++i)
+        {
+            if (!branchAnchors[i])
+            {
+                return HDB_ERR_QUERY_RANGE;
+            }
+        }
+        return HDB_OK;
+    }
+
     int AddJoinOn(const CHdbDslTable& table, int joinType, const CHdbDslCondition& condition)
     {
-        const CHdbDslField* localField;
-        const CHdbDslField* targetField;
-        HDB_SOURCE localSource;
+        HDB_SOURCE parentSource;
         HDB_SOURCE targetSource;
+        int conditionId;
         int ret;
 
         if (m_error != HDB_OK)
         {
             return m_error;
         }
-        if (!m_hasRoot || !condition.IsValid() || !condition.IsFieldCompare())
+        if (!m_hasRoot || !condition.IsValid() || FindSource(table.DatasetName()) != NULL)
         {
             m_error = HDB_ERR_QUERY_RANGE;
             return m_error;
         }
-        localField = NULL;
-        targetField = NULL;
-        if (strcmp(condition.RightField().DatasetName(), table.DatasetName()) == 0)
+        parentSource = NULL;
+        ret = ValidateJoinOnCondition(condition, table.DatasetName(), &parentSource);
+        if (ret != HDB_OK)
         {
-            localField = &condition.LeftField();
-            targetField = &condition.RightField();
+            m_error = ret;
+            return ret;
         }
-        else if (strcmp(condition.LeftField().DatasetName(), table.DatasetName()) == 0)
+        ret = EnsureQuery();
+        if (ret != HDB_OK)
         {
-            localField = &condition.RightField();
-            targetField = &condition.LeftField();
-        }
-        if (localField == NULL || targetField == NULL)
-        {
-            m_error = HDB_ERR_FIELD_REF;
-            return m_error;
-        }
-        localSource = FindSource(localField->DatasetName());
-        if (localSource == NULL || FindSource(table.DatasetName()) != NULL)
-        {
-            m_error = HDB_ERR_QUERY_RANGE;
-            return m_error;
+            m_error = ret;
+            return ret;
         }
         targetSource = NULL;
-        ret = HdbQueryJoinOn(m_query,
-            localSource,
-            table.DatasetName(),
-            joinType,
-            localField->FieldName(),
-            targetField->FieldName(),
-            &targetSource);
+        ret = HdbQueryJoin(m_query, parentSource, table.DatasetName(), joinType, &targetSource);
+        if (ret != HDB_OK)
+        {
+            m_error = ret;
+            return ret;
+        }
+        AddSource(table.DatasetName(), targetSource);
+        conditionId = -1;
+        ret = AddConditionToQuery(condition, &conditionId);
         if (ret == HDB_OK)
         {
-            AddSource(table.DatasetName(), targetSource);
+            ret = HdbQueryJoinOnCondition(m_query, targetSource, conditionId);
         }
         m_error = ret;
         return ret;
@@ -1344,7 +1550,7 @@ private:
         {
             *outConditionId = -1;
         }
-        if (outConditionId == NULL || !condition.IsValid() || condition.IsFieldCompare())
+        if (outConditionId == NULL || !condition.IsValid())
         {
             return HDB_ERR_QUERY_RANGE;
         }
@@ -1381,6 +1587,23 @@ private:
                 condition.Op(),
                 condition.ValueType(),
                 condition.ValueText(),
+                outConditionId);
+        }
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_FIELD_COMPARE)
+        {
+            HDB_SOURCE rightSource;
+
+            rightSource = FindSource(condition.RightField().DatasetName());
+            if (rightSource == NULL)
+            {
+                return HDB_ERR_FIELD_REF;
+            }
+            return HdbQueryConditionField(m_query,
+                source,
+                condition.LeftField().FieldName(),
+                condition.Op(),
+                rightSource,
+                condition.RightField().FieldName(),
                 outConditionId);
         }
         if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_NULL)
@@ -1578,7 +1801,7 @@ public:
     {
         if (m_error == HDB_OK)
         {
-            if (!condition.IsValid() || condition.IsFieldCompare() || m_hasWhere)
+            if (!condition.IsValid() || m_hasWhere)
             {
                 m_error = HDB_ERR_QUERY_RANGE;
             }
@@ -1706,7 +1929,7 @@ private:
         {
             *outConditionId = -1;
         }
-        if (outConditionId == NULL || !condition.IsValid() || condition.IsFieldCompare())
+        if (outConditionId == NULL || !condition.IsValid())
         {
             return HDB_ERR_QUERY_RANGE;
         }
@@ -1743,6 +1966,23 @@ private:
                 condition.Op(),
                 condition.ValueType(),
                 condition.ValueText(),
+                outConditionId);
+        }
+        if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_FIELD_COMPARE)
+        {
+            HDB_SOURCE rightSource;
+
+            rightSource = FindSource(condition.RightField().DatasetName());
+            if (rightSource == NULL)
+            {
+                return HDB_ERR_FIELD_REF;
+            }
+            return HdbQueryConditionField(m_query,
+                source,
+                condition.LeftField().FieldName(),
+                condition.Op(),
+                rightSource,
+                condition.RightField().FieldName(),
                 outConditionId);
         }
         if (condition.Kind() == CHdbDslCondition::HDB_DSL_CONDITION_NULL)

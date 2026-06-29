@@ -29,7 +29,7 @@ enum HdbQueryValueType
 enum HdbQuerySourceType
 {
     HDB_SOURCE_ROOT = 1, // 查询根数据集
-    HDB_SOURCE_JOIN = 2 // 通过 Association 显式 JOIN 出来的查询源
+    HDB_SOURCE_JOIN = 2 // 显式 JOIN 出来的查询源
 };
 
 enum HdbQueryConditionType
@@ -38,7 +38,8 @@ enum HdbQueryConditionType
     HDB_QCT_NULL = 2, // IS NULL 或 IS NOT NULL
     HDB_QCT_BETWEEN = 3, // BETWEEN 区间
     HDB_QCT_IN = 4, // IN 值列表
-    HDB_QCT_GROUP = 5 // AND/OR 组合
+    HDB_QCT_GROUP = 5, // AND/OR 组合
+    HDB_QCT_FIELD_COMPARE = 6 // 字段和字段比较
 };
 
 enum HdbQueryConditionLogic
@@ -52,11 +53,11 @@ struct HdbQuerySourceItem
     int sourceId;                 // query 内 source 编号
     int sourceType;               // HdbQuerySourceType
     int parentSourceId;           // JOIN 的父 source，ROOT 固定为 -1
-    std::string datasetName;      // ROOT 数据集名，显式 ON JOIN 时为目标数据集名
-    std::string associationName;  // 旧 Association JOIN 使用的命名关系
-    std::string localFieldName;   // 显式 ON JOIN 的父 source 字段
-    std::string targetFieldName;  // 显式 ON JOIN 的目标 source 字段
+    std::string datasetName;      // ROOT 数据集名，JOIN 时为目标数据集名
+    std::string localFieldName;   // JOIN 的父 source 字段
+    std::string targetFieldName;  // JOIN 的目标 source 字段
     int joinType;                 // HdbJoinType，ROOT 固定为 0
+    int onRootNodeId;             // JOIN ON 条件树根节点
 };
 
 struct HdbQueryFieldRef
@@ -91,6 +92,7 @@ struct HdbQueryConditionItem
     int nodeId;                       // 条件节点编号
     int conditionType;                // HdbQueryConditionType
     HdbQueryFieldRef field;           // 条件字段
+    HdbQueryFieldRef rightField;      // 字段比较右侧字段
     int op;                           // HdbCompareOp 或 NULL 判断标记
     int valueType;                    // HdbQueryValueType
     std::string valueText;            // 第一个值
@@ -115,13 +117,17 @@ public:
     void Clear();
     int SetStatementType(int statementType);
     int AddRootSource(const char* datasetName, int* outSourceId);
-    int AddJoinSource(int parentSourceId, const char* associationName, int joinType, int* outSourceId);
+    int AddJoinSource(int parentSourceId,
+        const char* targetDatasetName,
+        int joinType,
+        int* outSourceId);
     int AddJoinSourceOn(int parentSourceId,
         const char* targetDatasetName,
         int joinType,
         const char* localFieldName,
         const char* targetFieldName,
         int* outSourceId);
+    int SetJoinOnRoot(int sourceId, int nodeId);
     int AddSelect(int sourceId, const char* fieldName, const char* outputName);
     int AddWhereInt32(int sourceId, const char* fieldName, int op, int value);
     int AddWhereInt64(int sourceId, const char* fieldName, int op, HdbQueryInt64 value);
@@ -137,6 +143,12 @@ public:
         int op,
         int valueType,
         const char* valueText,
+        int* outNodeId);
+    int AddConditionFieldCompare(int leftSourceId,
+        const char* leftFieldName,
+        int op,
+        int rightSourceId,
+        const char* rightFieldName,
         int* outNodeId);
     int AddConditionNull(int sourceId, const char* fieldName, int isNotNull, int* outNodeId);
     int AddConditionBetween(int sourceId,

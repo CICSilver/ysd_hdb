@@ -5,6 +5,5 @@
 #include "../svr/HdbDatasetRegistry.h"
 
 const HdbDatasetDef* HdbGetGeneratedDatasets(int* outCount);
-const HdbAssociationDef* HdbGetGeneratedAssociations(int* outCount);
 
 #endif

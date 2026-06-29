@@ -185,7 +185,7 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
     {
         return ret;
     }
-    ret = BuildJoins(sources, joinSql);
+    ret = BuildJoins(ast, sources, outQuery, joinSql);
     if (ret != HDB_OK)
     {
         return ret;
@@ -330,10 +330,10 @@ int CHdbQuerySqlBuilder::ResolveSources(const CHdbQueryAst& ast, std::vector<Res
         resolved.sourceId = source.sourceId;
         resolved.parentSourceId = source.parentSourceId;
         resolved.dataset = NULL;
-        resolved.association = NULL;
         resolved.localField = NULL;
         resolved.targetField = NULL;
         resolved.joinType = source.joinType;
+        resolved.onRootNodeId = source.onRootNodeId;
         resolved.sqlAlias = AliasForSource(source.sourceId);
         if (source.sourceType == HDB_SOURCE_ROOT)
         {
@@ -341,7 +341,10 @@ int CHdbQuerySqlBuilder::ResolveSources(const CHdbQueryAst& ast, std::vector<Res
             int ret;
 
             ++rootCount;
-            if (source.sourceId != 0 || source.parentSourceId != -1 || source.joinType != 0)
+            if (source.sourceId != 0 ||
+                source.parentSourceId != -1 ||
+                source.joinType != 0 ||
+                source.onRootNodeId != -1)
             {
                 SetLastError("root source is invalid");
                 return HDB_ERR_PARAM;
@@ -368,7 +371,6 @@ int CHdbQuerySqlBuilder::ResolveSources(const CHdbQueryAst& ast, std::vector<Res
         else if (source.sourceType == HDB_SOURCE_JOIN)
         {
             const ResolvedSource* parentSource;
-            const HdbAssociationDef* association;
             const HdbDatasetDef* targetDataset;
             int ret;
 
@@ -385,27 +387,36 @@ int CHdbQuerySqlBuilder::ResolveSources(const CHdbQueryAst& ast, std::vector<Res
                 SetLastError("join parent source is missing");
                 return HDB_ERR_FIELD_REF;
             }
-            if (!source.datasetName.empty())
+            if (source.onRootNodeId < 0 || ast.FindConditionIndex(source.onRootNodeId) < 0)
             {
-                if (m_registry->ValidateIdentifier(source.datasetName.c_str()) != HDB_OK ||
-                    m_registry->ValidateIdentifier(source.localFieldName.c_str()) != HDB_OK ||
+                SetLastError("join on condition is missing");
+                return HDB_ERR_QUERY_RANGE;
+            }
+            if (m_registry->ValidateIdentifier(source.datasetName.c_str()) != HDB_OK)
+            {
+                SetLastError(m_registry->GetLastError());
+                return HDB_ERR_FIELD_REF;
+            }
+            targetDataset = m_registry->FindDataset(source.datasetName.c_str());
+            if (targetDataset == NULL)
+            {
+                SetLastError("join target dataset is not found");
+                return HDB_ERR_DATASET_NOT_FOUND;
+            }
+            ret = ValidateJoinTargetDataset(*targetDataset);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            resolved.dataset = targetDataset;
+            if (!source.localFieldName.empty() || !source.targetFieldName.empty())
+            {
+                if (m_registry->ValidateIdentifier(source.localFieldName.c_str()) != HDB_OK ||
                     m_registry->ValidateIdentifier(source.targetFieldName.c_str()) != HDB_OK)
                 {
                     SetLastError(m_registry->GetLastError());
                     return HDB_ERR_FIELD_REF;
                 }
-                targetDataset = m_registry->FindDataset(source.datasetName.c_str());
-                if (targetDataset == NULL)
-                {
-                    SetLastError("join target dataset is not found");
-                    return HDB_ERR_DATASET_NOT_FOUND;
-                }
-                ret = ValidateJoinTargetDataset(*targetDataset);
-                if (ret != HDB_OK)
-                {
-                    return ret;
-                }
-                resolved.dataset = targetDataset;
                 resolved.localField = m_registry->FindField(*parentSource->dataset, source.localFieldName.c_str());
                 resolved.targetField = m_registry->FindField(*targetDataset, source.targetFieldName.c_str());
                 if (resolved.localField == NULL || resolved.targetField == NULL)
@@ -417,47 +428,6 @@ int CHdbQuerySqlBuilder::ResolveSources(const CHdbQueryAst& ast, std::vector<Res
                 {
                     SetLastError("join on field type mismatch");
                     return HDB_ERR_TYPE_MISMATCH;
-                }
-            }
-            else
-            {
-                if (m_registry->ValidateIdentifier(source.associationName.c_str()) != HDB_OK)
-                {
-                    SetLastError(m_registry->GetLastError());
-                    return HDB_ERR_ASSOCIATION_NOT_FOUND;
-                }
-                association = m_registry->FindAssociation(parentSource->dataset->datasetName,
-                    source.associationName.c_str());
-                if (association == NULL)
-                {
-                    SetLastError("association is not found");
-                    return HDB_ERR_ASSOCIATION_NOT_FOUND;
-                }
-                ret = m_registry->ValidateAssociation(*association);
-                if (ret != HDB_OK)
-                {
-                    SetLastError(m_registry->GetLastError());
-                    return ret;
-                }
-                targetDataset = m_registry->FindDataset(association->targetDataset);
-                if (targetDataset == NULL)
-                {
-                    SetLastError("association target dataset is missing");
-                    return HDB_ERR_ASSOCIATION_NOT_FOUND;
-                }
-                ret = ValidateJoinTargetDataset(*targetDataset);
-                if (ret != HDB_OK)
-                {
-                    return ret;
-                }
-                resolved.association = association;
-                resolved.dataset = targetDataset;
-                resolved.localField = m_registry->FindField(*parentSource->dataset, association->localFieldName);
-                resolved.targetField = m_registry->FindField(*targetDataset, association->targetFieldName);
-                if (resolved.localField == NULL || resolved.targetField == NULL)
-                {
-                    SetLastError("association field is missing");
-                    return HDB_ERR_ASSOCIATION_NOT_FOUND;
                 }
             }
         }
@@ -583,6 +553,14 @@ int CHdbQuerySqlBuilder::ResolveConditionFields(const CHdbQueryAst& ast,
             return HDB_ERR_FIELD_REF;
         }
         fields.push_back(field);
+        if (ast.conditions[i].conditionType == HDB_QCT_FIELD_COMPARE)
+        {
+            if (ResolveFieldRef(sources, ast.conditions[i].rightField, field) != HDB_OK)
+            {
+                return HDB_ERR_FIELD_REF;
+            }
+            fields.push_back(field);
+        }
     }
     return HDB_OK;
 }
@@ -678,13 +656,8 @@ int CHdbQuerySqlBuilder::CollectRootColumns(const CHdbQueryAst& ast,
     }
     for (i = 1; i < sources.size(); ++i)
     {
-        if (sources[i].parentSourceId == 0)
+        if (sources[i].parentSourceId == 0 && sources[i].localField != NULL)
         {
-            if (sources[i].localField == NULL)
-            {
-                SetLastError("root join local field is missing");
-                return HDB_ERR_ASSOCIATION_NOT_FOUND;
-            }
             AddRootColumn(rootColumns, sources[i].localField->columnName);
         }
     }
@@ -832,7 +805,10 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
     return HDB_OK;
 }
 
-int CHdbQuerySqlBuilder::BuildJoins(const std::vector<ResolvedSource>& sources, std::string& outSql)
+int CHdbQuerySqlBuilder::BuildJoins(const CHdbQueryAst& ast,
+    const std::vector<ResolvedSource>& sources,
+    HdbBuiltQuery& outQuery,
+    std::string& outSql)
 {
     std::ostringstream sql;
     size_t i;
@@ -842,16 +818,31 @@ int CHdbQuerySqlBuilder::BuildJoins(const std::vector<ResolvedSource>& sources, 
     {
         const ResolvedSource& source = sources[i];
         const ResolvedSource* parentSource;
+        std::string onSql;
+        int ret;
 
         parentSource = FindResolvedSource(sources, source.parentSourceId);
         if (parentSource == NULL ||
             parentSource->dataset == NULL ||
-            source.dataset == NULL ||
-            source.localField == NULL ||
-            source.targetField == NULL)
+            source.dataset == NULL)
         {
             SetLastError("join source is incomplete");
-            return HDB_ERR_ASSOCIATION_NOT_FOUND;
+            return HDB_ERR_FIELD_REF;
+        }
+        ret = ValidateJoinOnCondition(ast, sources, source.sourceId, source.onRootNodeId);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = BuildConditionSql(ast, sources, source.onRootNodeId, outQuery, onSql);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        if (onSql.empty())
+        {
+            SetLastError("join on condition is empty");
+            return HDB_ERR_QUERY_RANGE;
         }
         if (i > 1)
         {
@@ -859,8 +850,7 @@ int CHdbQuerySqlBuilder::BuildJoins(const std::vector<ResolvedSource>& sources, 
         }
         sql << (source.joinType == HDB_JOIN_INNER ? "inner join " : "left join ")
             << source.dataset->shard.tableName << " " << source.sqlAlias
-            << " on " << parentSource->sqlAlias << "." << source.localField->columnName
-            << " = " << source.sqlAlias << "." << source.targetField->columnName;
+            << " on " << onSql;
     }
     outSql = sql.str();
     return HDB_OK;
@@ -1018,6 +1008,48 @@ int CHdbQuerySqlBuilder::BuildConditionSql(const CHdbQueryAst& ast,
         paramIndex = AddParam(outQuery, value);
         sql << expr << " " << opText << " " << Placeholder(paramIndex);
     }
+    else if (condition->conditionType == HDB_QCT_FIELD_COMPARE)
+    {
+        ResolvedField leftField;
+        ResolvedField rightField;
+        std::string leftExpr;
+        std::string rightExpr;
+        const char* opText;
+        int ret;
+
+        ret = ResolveFieldRef(sources, condition->field, leftField);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = ResolveFieldRef(sources, condition->rightField, rightField);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = ValidateFieldCompare(leftField, rightField, condition->op);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        opText = OpToSql(condition->op);
+        if (opText == NULL)
+        {
+            SetLastError("unsupported field compare op");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        ret = AppendFieldExpr(leftField, leftExpr);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = AppendFieldExpr(rightField, rightExpr);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        sql << leftExpr << " " << opText << " " << rightExpr;
+    }
     else if (condition->conditionType == HDB_QCT_NULL)
     {
         ResolvedField field;
@@ -1147,6 +1179,167 @@ int CHdbQuerySqlBuilder::BuildConditionSql(const CHdbQueryAst& ast,
     }
     outSql = sql.str();
     return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::ValidateJoinOnCondition(const CHdbQueryAst& ast,
+    const std::vector<ResolvedSource>& sources,
+    int targetSourceId,
+    int nodeId)
+{
+    std::vector<int> branchAnchors;
+    size_t i;
+    int ret;
+
+    ret = BuildJoinOnBranchAnchors(ast, sources, targetSourceId, nodeId, branchAnchors);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (branchAnchors.empty())
+    {
+        SetLastError("join on condition is empty");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    for (i = 0; i < branchAnchors.size(); ++i)
+    {
+        if (!branchAnchors[i])
+        {
+            SetLastError("join on OR branch is not anchored");
+            return HDB_ERR_QUERY_RANGE;
+        }
+    }
+    return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::BuildJoinOnBranchAnchors(const CHdbQueryAst& ast,
+    const std::vector<ResolvedSource>& sources,
+    int targetSourceId,
+    int nodeId,
+    std::vector<int>& branchAnchors)
+{
+    const HdbQueryConditionItem* condition;
+    int conditionIndex;
+    size_t i;
+
+    branchAnchors.clear();
+    conditionIndex = ast.FindConditionIndex(nodeId);
+    if (conditionIndex < 0)
+    {
+        SetLastError("join on condition node is invalid");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    condition = &ast.conditions[conditionIndex];
+    if (condition->conditionType == HDB_QCT_GROUP)
+    {
+        std::vector<int> currentAnchors;
+
+        if (condition->childNodeIds.size() < 2)
+        {
+            SetLastError("join on condition group has too few children");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        for (i = 0; i < condition->childNodeIds.size(); ++i)
+        {
+            std::vector<int> childAnchors;
+            int ret;
+
+            ret = BuildJoinOnBranchAnchors(ast,
+                sources,
+                targetSourceId,
+                condition->childNodeIds[i],
+                childAnchors);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            if (condition->logic == HDB_QCL_OR)
+            {
+                branchAnchors.insert(branchAnchors.end(), childAnchors.begin(), childAnchors.end());
+            }
+            else if (condition->logic == HDB_QCL_AND)
+            {
+                if (currentAnchors.empty())
+                {
+                    currentAnchors = childAnchors;
+                }
+                else
+                {
+                    std::vector<int> mergedAnchors;
+                    size_t leftIndex;
+                    size_t rightIndex;
+
+                    for (leftIndex = 0; leftIndex < currentAnchors.size(); ++leftIndex)
+                    {
+                        for (rightIndex = 0; rightIndex < childAnchors.size(); ++rightIndex)
+                        {
+                            mergedAnchors.push_back(currentAnchors[leftIndex] || childAnchors[rightIndex]);
+                        }
+                    }
+                    currentAnchors = mergedAnchors;
+                }
+            }
+            else
+            {
+                SetLastError("join on condition logic is invalid");
+                return HDB_ERR_QUERY_RANGE;
+            }
+        }
+        if (condition->logic == HDB_QCL_AND)
+        {
+            branchAnchors = currentAnchors;
+        }
+        return branchAnchors.empty() ? HDB_ERR_QUERY_RANGE : HDB_OK;
+    }
+    if (condition->conditionType == HDB_QCT_COMPARE)
+    {
+        ResolvedField field;
+        int ret;
+
+        ret = ResolveFieldRef(sources, condition->field, field);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        if (!IsJoinConditionFieldAllowed(field, targetSourceId))
+        {
+            SetLastError("join on condition references future source");
+            return HDB_ERR_FIELD_REF;
+        }
+        branchAnchors.push_back(0);
+        return HDB_OK;
+    }
+    if (condition->conditionType == HDB_QCT_FIELD_COMPARE)
+    {
+        ResolvedField leftField;
+        ResolvedField rightField;
+        int ret;
+
+        ret = ResolveFieldRef(sources, condition->field, leftField);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = ResolveFieldRef(sources, condition->rightField, rightField);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = ValidateFieldCompare(leftField, rightField, condition->op);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        if (!IsJoinConditionFieldAllowed(leftField, targetSourceId) ||
+            !IsJoinConditionFieldAllowed(rightField, targetSourceId))
+        {
+            SetLastError("join on condition references future source");
+            return HDB_ERR_FIELD_REF;
+        }
+        branchAnchors.push_back(IsJoinAnchorFieldCompare(leftField, rightField, targetSourceId));
+        return HDB_OK;
+    }
+    SetLastError("unsupported join on condition type");
+    return HDB_ERR_QUERY_RANGE;
 }
 
 int CHdbQuerySqlBuilder::BuildOrder(const CHdbQueryAst& ast,
@@ -1669,6 +1862,54 @@ int CHdbQuerySqlBuilder::FormatValueForField(const ResolvedField& field,
     }
 }
 
+int CHdbQuerySqlBuilder::ValidateFieldCompare(const ResolvedField& leftField,
+    const ResolvedField& rightField,
+    int op)
+{
+    int leftType;
+    int rightType;
+    int leftInt32Like;
+    int rightInt32Like;
+
+    if (leftField.field == NULL || rightField.field == NULL)
+    {
+        SetLastError("field compare field is NULL");
+        return HDB_ERR_FIELD_REF;
+    }
+    if (op == HDB_OP_LIKE || OpToSql(op) == NULL)
+    {
+        SetLastError("unsupported field compare op");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    leftType = leftField.field->type;
+    rightType = rightField.field->type;
+    if (leftType == rightType)
+    {
+        return HDB_OK;
+    }
+    leftInt32Like = leftType == HDB_FT_INT32 || leftType == HDB_FT_SMALLINT;
+    rightInt32Like = rightType == HDB_FT_INT32 || rightType == HDB_FT_SMALLINT;
+    if (leftInt32Like && rightInt32Like)
+    {
+        return HDB_OK;
+    }
+    SetLastError("field compare type mismatch");
+    return HDB_ERR_TYPE_MISMATCH;
+}
+
+int CHdbQuerySqlBuilder::IsJoinAnchorFieldCompare(const ResolvedField& leftField,
+    const ResolvedField& rightField,
+    int targetSourceId) const
+{
+    return (leftField.sourceId == targetSourceId && rightField.sourceId < targetSourceId) ||
+        (rightField.sourceId == targetSourceId && leftField.sourceId < targetSourceId);
+}
+
+int CHdbQuerySqlBuilder::IsJoinConditionFieldAllowed(const ResolvedField& field, int targetSourceId) const
+{
+    return field.sourceId >= 0 && field.sourceId <= targetSourceId;
+}
+
 int CHdbQuerySqlBuilder::AddParam(HdbBuiltQuery& query, const std::string& value)
 {
     query.params.push_back(value);
@@ -1760,7 +2001,7 @@ int CHdbQuerySqlBuilder::ValidateJoinTargetDataset(const HdbDatasetDef& dataset)
     if (dataset.shard.shardType == HDB_SHARD_DAY)
     {
         // 当前 JOIN 目标只支持固定表或数据库分区，日分片目标会让别名和分片范围都变复杂
-        SetLastError("day sharded association target is not supported");
+        SetLastError("day sharded join target is not supported");
         return HDB_ERR_SHARD_DEF;
     }
     return HDB_OK;

@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -173,6 +173,11 @@ if exist "$(ProjectDir)..\svr\include\PostgreSQL\bin\*.dll" copy /Y "$(ProjectDi
     <ProjectReference Include="..\dll\ysd_hdb_dll.vcxproj">
       <Project>{81ad00d7-aeb2-405d-a02c-edfb95d00b40}</Project>
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\svr\ysd_hdb_svr.vcxproj">
+      <Project>{b8ab72cd-68ca-4e01-a087-015d66a528ed}</Project>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

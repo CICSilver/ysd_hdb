@@ -103,12 +103,3 @@ const HdbDatasetDef* HdbGetGeneratedDatasets(int* outCount)
     }
     return g_hdbGeneratedDatasets;
 }
-
-const HdbAssociationDef* HdbGetGeneratedAssociations(int* outCount)
-{
-    if (outCount != NULL)
-    {
-        *outCount = 0;
-    }
-    return NULL;
-}

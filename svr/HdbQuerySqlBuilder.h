@@ -35,10 +35,10 @@ private:
         int sourceId;                         // AST sourceId
         int parentSourceId;                   // JOIN 父 source
         const HdbDatasetDef* dataset;         // 当前 source 对应的数据集
-        const HdbAssociationDef* association; // JOIN 使用的 Association，ROOT 为空
         const HdbFieldDef* localField;        // 父 source 上参与 ON 的字段
         const HdbFieldDef* targetField;       // 当前 source 上参与 ON 的字段
         int joinType;                         // HdbJoinType
+        int onRootNodeId;                     // JOIN ON 条件树根节点
         std::string sqlAlias;                 // s0/s1/s2
     };
 
@@ -84,7 +84,10 @@ private:
         const std::vector<ResolvedField>& whereFields,
         HdbBuiltQuery& outQuery,
         std::string& outSource);
-    int BuildJoins(const std::vector<ResolvedSource>& sources, std::string& outSql);
+    int BuildJoins(const CHdbQueryAst& ast,
+        const std::vector<ResolvedSource>& sources,
+        HdbBuiltQuery& outQuery,
+        std::string& outSql);
     int BuildWhere(const CHdbQueryAst& ast,
         const ResolvedSource& rootSource,
         const std::vector<ResolvedSource>& sources,
@@ -96,6 +99,15 @@ private:
         int nodeId,
         HdbBuiltQuery& outQuery,
         std::string& outSql);
+    int ValidateJoinOnCondition(const CHdbQueryAst& ast,
+        const std::vector<ResolvedSource>& sources,
+        int targetSourceId,
+        int nodeId);
+    int BuildJoinOnBranchAnchors(const CHdbQueryAst& ast,
+        const std::vector<ResolvedSource>& sources,
+        int targetSourceId,
+        int nodeId,
+        std::vector<int>& branchAnchors);
     int BuildOrder(const CHdbQueryAst& ast,
         const std::vector<ResolvedField>& orderFields,
         std::string& outSql);
@@ -123,6 +135,13 @@ private:
         int valueType,
         const std::string& valueText,
         std::string& outValue);
+    int ValidateFieldCompare(const ResolvedField& leftField,
+        const ResolvedField& rightField,
+        int op);
+    int IsJoinAnchorFieldCompare(const ResolvedField& leftField,
+        const ResolvedField& rightField,
+        int targetSourceId) const;
+    int IsJoinConditionFieldAllowed(const ResolvedField& field, int targetSourceId) const;
     int AddParam(HdbBuiltQuery& query, const std::string& value);
     std::string Placeholder(int index) const;
     std::string FormatTimestampMs(HdbInt64 value) const;

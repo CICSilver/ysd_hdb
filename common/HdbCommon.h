@@ -22,7 +22,6 @@ enum HdbErrorCode
     HDB_ERR_DATASET_NOT_FOUND = -9, // 调用方传入的逻辑数据集不存在
     HDB_ERR_FIELD_NOT_FOUND = -10, // 字段名在指定数据集内不存在
     HDB_ERR_FIELD_REF = -11, // 字段引用格式非法或无法解析到字段
-    HDB_ERR_ASSOCIATION_NOT_FOUND = -12, // 显式 JOIN 使用的 Association 不存在
     HDB_ERR_QUERY_NEED_TIME_RANGE = -13, // 按时间分片的数据集查询缺少时间范围
     HDB_ERR_QUERY_RANGE = -14, // 查询时间范围、分页范围或排序条件非法
     HDB_ERR_SHARD_DEF = -15, // 分片元数据定义非法

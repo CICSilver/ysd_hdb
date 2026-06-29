@@ -74,7 +74,6 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
     {
         return ret;
     }
-    out << "ast_version=" << HDB_QUERY_AST_VERSION << "\n";
     out << "statement=" << ast.statementType << "\n";
     for (index = 0; index < ast.sources.size(); ++index)
     {
@@ -87,7 +86,11 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
         if (source.sourceType == HDB_SOURCE_ROOT)
         {
             ret = ValidateNameText(source.datasetName, "root dataset");
-            if (ret != HDB_OK || source.sourceId != 0 || source.parentSourceId != -1 || source.joinType != 0)
+            if (ret != HDB_OK ||
+                source.sourceId != 0 ||
+                source.parentSourceId != -1 ||
+                source.joinType != 0 ||
+                source.onRootNodeId != -1)
             {
                 SetLastError("invalid root source");
                 return HDB_ERR_PARAM;
@@ -98,47 +101,38 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
         {
             if (source.parentSourceId < 0 ||
                 source.parentSourceId >= source.sourceId ||
-                ValidateJoinType(source.joinType) != HDB_OK)
+                ValidateJoinType(source.joinType) != HDB_OK ||
+                ast.FindConditionIndex(source.onRootNodeId) < 0)
             {
                 SetLastError("invalid join source");
                 return HDB_ERR_QUERY_RANGE;
             }
-            if (!source.datasetName.empty())
+            ret = ValidateNameText(source.datasetName, "join target dataset");
+            if (ret != HDB_OK)
             {
-                ret = ValidateNameText(source.datasetName, "join target dataset");
-                if (ret != HDB_OK)
-                {
-                    return ret;
-                }
+                return ret;
+            }
+            if (!source.localFieldName.empty())
+            {
                 ret = ValidateNameText(source.localFieldName, "join local field");
                 if (ret != HDB_OK)
                 {
                     return ret;
                 }
+            }
+            if (!source.targetFieldName.empty())
+            {
                 ret = ValidateNameText(source.targetFieldName, "join target field");
                 if (ret != HDB_OK)
                 {
                     return ret;
                 }
-                out << "source=join_on|" << source.sourceId << "|"
-                    << source.parentSourceId << "|"
-                    << source.datasetName << "|"
-                    << source.joinType << "|"
-                    << source.localFieldName << "|"
-                    << source.targetFieldName << "\n";
             }
-            else
-            {
-                ret = ValidateNameText(source.associationName, "association name");
-                if (ret != HDB_OK)
-                {
-                    return ret;
-                }
-                out << "source=join|" << source.sourceId << "|"
-                    << source.parentSourceId << "|"
-                    << source.associationName << "|"
-                    << source.joinType << "\n";
-            }
+            out << "source=join_condition|" << source.sourceId << "|"
+                << source.parentSourceId << "|"
+                << source.datasetName << "|"
+                << source.joinType << "|"
+                << source.onRootNodeId << "\n";
         }
         else
         {
@@ -279,6 +273,30 @@ int CHdbQueryAstCodec::Encode(const CHdbQueryAst& ast, std::string& outText)
                 << condition.op << "|"
                 << condition.valueType << "|"
                 << condition.valueText << "\n";
+        }
+        else if (condition.conditionType == HDB_QCT_FIELD_COMPARE)
+        {
+            ret = ValidateNameText(condition.field.fieldName, "condition left field name");
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            ret = ValidateNameText(condition.rightField.fieldName, "condition right field name");
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            ret = ValidateFieldCompareOp(condition.op);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+            out << "condition=field_compare|" << condition.nodeId << "|"
+                << condition.field.sourceId << "|"
+                << condition.field.fieldName << "|"
+                << condition.op << "|"
+                << condition.rightField.sourceId << "|"
+                << condition.rightField.fieldName << "\n";
         }
         else if (condition.conditionType == HDB_QCT_NULL)
         {
@@ -431,7 +449,6 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
     std::string line;
     size_t pos;
     size_t next;
-    int seenVersion;
 
     if (text == NULL)
     {
@@ -445,7 +462,6 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
         return HDB_ERR_BUFFER;
     }
     outAst.Clear();
-    seenVersion = 0;
     pos = 0;
     while (pos <= all.size())
     {
@@ -464,23 +480,7 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
         {
             continue;
         }
-        if (line.find("ast_version=") == 0)
-        {
-            int version;
-            if (ParseInt32Strict(line.substr(12), &version) != HDB_OK ||
-                (version != HDB_QUERY_AST_VERSION && version != 3 && version != 2))
-            {
-                SetLastError("unsupported query ast version");
-                return HDB_ERR_PARAM;
-            }
-            seenVersion = 1;
-        }
-        else if (!seenVersion)
-        {
-            SetLastError("query ast version is missing");
-            return HDB_ERR_PARAM;
-        }
-        else if (line.find("statement=") == 0)
+        if (line.find("statement=") == 0)
         {
             int statementType;
 
@@ -498,6 +498,7 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
             int sourceId;
             int parentSourceId;
             int joinType;
+            int onRootNodeId;
             int addedSourceId;
 
             if (SplitFields(line.substr(7), fields) != HDB_OK || fields.empty())
@@ -516,21 +517,6 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
                 {
                     SetLastError("invalid root source");
                     return HDB_ERR_PARAM;
-                }
-            }
-            else if (fields[0] == "join")
-            {
-                if (fields.size() != 5 ||
-                    ParseInt32Strict(fields[1], &sourceId) != HDB_OK ||
-                    ParseInt32Strict(fields[2], &parentSourceId) != HDB_OK ||
-                    ValidateNameText(fields[3], "association name") != HDB_OK ||
-                    ParseInt32Strict(fields[4], &joinType) != HDB_OK ||
-                    ValidateJoinType(joinType) != HDB_OK ||
-                    outAst.AddJoinSource(parentSourceId, fields[3].c_str(), joinType, &addedSourceId) != 0 ||
-                    addedSourceId != sourceId)
-                {
-                    SetLastError("invalid join source");
-                    return HDB_ERR_QUERY_RANGE;
                 }
             }
             else if (fields[0] == "join_on")
@@ -554,6 +540,26 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
                     SetLastError("invalid join on source");
                     return HDB_ERR_QUERY_RANGE;
                 }
+            }
+            else if (fields[0] == "join_condition")
+            {
+                if (fields.size() != 6 ||
+                    ParseInt32Strict(fields[1], &sourceId) != HDB_OK ||
+                    ParseInt32Strict(fields[2], &parentSourceId) != HDB_OK ||
+                    ValidateNameText(fields[3], "join target dataset") != HDB_OK ||
+                    ParseInt32Strict(fields[4], &joinType) != HDB_OK ||
+                    ValidateJoinType(joinType) != HDB_OK ||
+                    ParseInt32Strict(fields[5], &onRootNodeId) != HDB_OK ||
+                    outAst.AddJoinSource(parentSourceId,
+                        fields[3].c_str(),
+                        joinType,
+                        &addedSourceId) != 0 ||
+                    addedSourceId != sourceId)
+                {
+                    SetLastError("invalid join condition source");
+                    return HDB_ERR_QUERY_RANGE;
+                }
+                outAst.sources[sourceId].onRootNodeId = onRootNodeId;
             }
             else
             {
@@ -730,6 +736,31 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
                     return HDB_ERR_QUERY_RANGE;
                 }
             }
+            else if (fields[0] == "field_compare")
+            {
+                int rightSourceId;
+
+                if (fields.size() != 7 ||
+                    outAst.conditions.size() >= HDB_QUERY_MAX_CONDITION_COUNT ||
+                    ParseInt32Strict(fields[1], &nodeId) != HDB_OK ||
+                    ParseInt32Strict(fields[2], &sourceId) != HDB_OK ||
+                    ValidateNameText(fields[3], "condition left field name") != HDB_OK ||
+                    ParseInt32Strict(fields[4], &op) != HDB_OK ||
+                    ParseInt32Strict(fields[5], &rightSourceId) != HDB_OK ||
+                    ValidateNameText(fields[6], "condition right field name") != HDB_OK ||
+                    ValidateFieldCompareOp(op) != HDB_OK ||
+                    outAst.AddConditionFieldCompare(sourceId,
+                        fields[3].c_str(),
+                        op,
+                        rightSourceId,
+                        fields[6].c_str(),
+                        &addedNodeId) != 0 ||
+                    addedNodeId != nodeId)
+                {
+                    SetLastError("invalid field compare condition");
+                    return HDB_ERR_QUERY_RANGE;
+                }
+            }
             else if (fields[0] == "null")
             {
                 if (fields.size() != 5 ||
@@ -892,10 +923,19 @@ int CHdbQueryAstCodec::Decode(const char* text, CHdbQueryAst& outAst)
             return HDB_ERR_PARAM;
         }
     }
-    if (!seenVersion || !outAst.HasRootSource())
+    if (!outAst.HasRootSource())
     {
         SetLastError("query ast source is missing");
         return HDB_ERR_PARAM;
+    }
+    for (pos = 0; pos < outAst.sources.size(); ++pos)
+    {
+        if (outAst.sources[pos].sourceType == HDB_SOURCE_JOIN &&
+            outAst.FindConditionIndex(outAst.sources[pos].onRootNodeId) < 0)
+        {
+            SetLastError("join on condition is missing");
+            return HDB_ERR_QUERY_RANGE;
+        }
     }
     return HDB_OK;
 }
@@ -954,6 +994,17 @@ int CHdbQueryAstCodec::ValidateCompareOp(int op)
     return HDB_ERR_QUERY_RANGE;
 }
 
+int CHdbQueryAstCodec::ValidateFieldCompareOp(int op)
+{
+    if (op == HDB_OP_EQ || op == HDB_OP_NE || op == HDB_OP_GT ||
+        op == HDB_OP_GE || op == HDB_OP_LT || op == HDB_OP_LE)
+    {
+        return HDB_OK;
+    }
+    SetLastError("invalid field compare op");
+    return HDB_ERR_QUERY_RANGE;
+}
+
 int CHdbQueryAstCodec::ValidateValueType(int valueType)
 {
     if (valueType == HDB_QVT_INT32 || valueType == HDB_QVT_INT64 ||
@@ -1004,7 +1055,8 @@ int CHdbQueryAstCodec::ValidateConditionType(int conditionType)
         conditionType == HDB_QCT_NULL ||
         conditionType == HDB_QCT_BETWEEN ||
         conditionType == HDB_QCT_IN ||
-        conditionType == HDB_QCT_GROUP)
+        conditionType == HDB_QCT_GROUP ||
+        conditionType == HDB_QCT_FIELD_COMPARE)
     {
         return HDB_OK;
     }

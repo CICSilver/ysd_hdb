@@ -491,6 +491,16 @@ static int HdbDllIsValidCompareOp(int op)
         op == HDB_OP_LIKE;
 }
 
+static int HdbDllIsValidFieldCompareOp(int op)
+{
+    return op == HDB_OP_EQ ||
+        op == HDB_OP_NE ||
+        op == HDB_OP_GT ||
+        op == HDB_OP_GE ||
+        op == HDB_OP_LT ||
+        op == HDB_OP_LE;
+}
+
 static int HdbDllIsValidValueType(int valueType)
 {
     return valueType == HDB_QVT_INT32 ||
@@ -978,43 +988,6 @@ static int HdbQueryFromImpl(HDB_QUERY query, const char* datasetName, HDB_SOURCE
     return ret;
 }
 
-static int HdbQueryJoinImpl(HDB_QUERY query,
-    HDB_SOURCE fromSource,
-    const char* associationName,
-    int joinType,
-    HDB_SOURCE* outTargetSource)
-{
-    int parentSourceId;
-    int targetSourceId;
-    int ret;
-
-    if (outTargetSource != NULL)
-    {
-        *outTargetSource = NULL;
-    }
-    if (query == NULL || fromSource == NULL || associationName == NULL || associationName[0] == '\0' ||
-        outTargetSource == NULL)
-    {
-        return HDB_ERR_PARAM;
-    }
-    ret = HdbDllValidateQuerySource(query, fromSource, &parentSourceId);
-    if (ret != HDB_OK)
-    {
-        return ret;
-    }
-    if (query->ast.AddJoinSource(parentSourceId, associationName, joinType, &targetSourceId) != 0)
-    {
-        HdbDllSetQueryError(query, "invalid query join source");
-        return HDB_ERR_QUERY_RANGE;
-    }
-    ret = HdbDllCreateQuerySource(query, targetSourceId, outTargetSource);
-    if (ret != HDB_OK && !query->ast.sources.empty())
-    {
-        query->ast.sources.pop_back();
-    }
-    return ret;
-}
-
 static int HdbQueryJoinOnImpl(HDB_QUERY query,
     HDB_SOURCE fromSource,
     const char* targetDatasetName,
@@ -1064,6 +1037,68 @@ static int HdbQueryJoinOnImpl(HDB_QUERY query,
         query->ast.sources.pop_back();
     }
     return ret;
+}
+
+static int HdbQueryJoinImpl(HDB_QUERY query,
+    HDB_SOURCE fromSource,
+    const char* targetDatasetName,
+    int joinType,
+    HDB_SOURCE* outTargetSource)
+{
+    int parentSourceId;
+    int targetSourceId;
+    int ret;
+
+    if (outTargetSource != NULL)
+    {
+        *outTargetSource = NULL;
+    }
+    if (query == NULL ||
+        fromSource == NULL ||
+        targetDatasetName == NULL ||
+        targetDatasetName[0] == '\0' ||
+        outTargetSource == NULL)
+    {
+        return HDB_ERR_PARAM;
+    }
+    ret = HdbDllValidateQuerySource(query, fromSource, &parentSourceId);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (query->ast.AddJoinSource(parentSourceId, targetDatasetName, joinType, &targetSourceId) != 0)
+    {
+        HdbDllSetQueryError(query, "invalid query join source");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    ret = HdbDllCreateQuerySource(query, targetSourceId, outTargetSource);
+    if (ret != HDB_OK && !query->ast.sources.empty())
+    {
+        query->ast.sources.pop_back();
+    }
+    return ret;
+}
+
+static int HdbQueryJoinOnConditionImpl(HDB_QUERY query, HDB_SOURCE targetSource, int conditionId)
+{
+    int targetSourceId;
+    int ret;
+
+    if (query == NULL || targetSource == NULL)
+    {
+        return HDB_ERR_PARAM;
+    }
+    ret = HdbDllValidateQuerySource(query, targetSource, &targetSourceId);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (query->ast.SetJoinOnRoot(targetSourceId, conditionId) != 0)
+    {
+        HdbDllSetQueryError(query, "invalid join on condition root");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    return HDB_OK;
 }
 
 static int HdbQueryTimeRangeImpl(HDB_QUERY query, HdbInt64 beginMs, HdbInt64 endMs)
@@ -1244,6 +1279,54 @@ static int HdbQueryConditionValueImpl(HDB_QUERY query,
     if (query->ast.AddConditionCompare(sourceId, fieldName, op, valueType, valueText, outConditionId) != 0)
     {
         HdbDllSetQueryError(query, "invalid compare condition");
+        return HDB_ERR_PARAM;
+    }
+    return HDB_OK;
+}
+
+static int HdbQueryConditionFieldImpl(HDB_QUERY query,
+    HDB_SOURCE leftSource,
+    const char* leftFieldName,
+    int op,
+    HDB_SOURCE rightSource,
+    const char* rightFieldName,
+    int* outConditionId)
+{
+    int leftSourceId;
+    int rightSourceId;
+    int ret;
+
+    if (outConditionId != NULL)
+    {
+        *outConditionId = -1;
+    }
+    if (query == NULL || outConditionId == NULL)
+    {
+        return HDB_ERR_PARAM;
+    }
+    if (!HdbDllIsValidFieldCompareOp(op))
+    {
+        HdbDllSetQueryError(query, "invalid field compare condition");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    ret = HdbDllValidateQuerySource(query, leftSource, &leftSourceId);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    ret = HdbDllValidateQuerySource(query, rightSource, &rightSourceId);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (query->ast.AddConditionFieldCompare(leftSourceId,
+        leftFieldName,
+        op,
+        rightSourceId,
+        rightFieldName,
+        outConditionId) != 0)
+    {
+        HdbDllSetQueryError(query, "invalid field compare condition");
         return HDB_ERR_PARAM;
     }
     return HDB_OK;
@@ -2162,38 +2245,6 @@ int HDB_CALL HdbQueryFrom(HDB_QUERY query, const char* datasetName, HDB_SOURCE* 
     }
 }
 
-int HDB_CALL HdbQueryJoin(HDB_QUERY query,
-    HDB_SOURCE fromSource,
-    const char* associationName,
-    int joinType,
-    HDB_SOURCE* outTargetSource)
-{
-    if (outTargetSource != NULL)
-    {
-        *outTargetSource = NULL;
-    }
-    try
-    {
-        return HdbQueryJoinImpl(query, fromSource, associationName, joinType, outTargetSource);
-    }
-    catch (const std::bad_alloc&)
-    {
-        if (outTargetSource != NULL)
-        {
-            *outTargetSource = NULL;
-        }
-        return HdbDllReturnQueryBadAlloc(query);
-    }
-    catch (...)
-    {
-        if (outTargetSource != NULL)
-        {
-            *outTargetSource = NULL;
-        }
-        return HdbDllReturnQueryException(query);
-    }
-}
-
 int HDB_CALL HdbQueryJoinOn(HDB_QUERY query,
     HDB_SOURCE fromSource,
     const char* targetDatasetName,
@@ -2230,6 +2281,54 @@ int HDB_CALL HdbQueryJoinOn(HDB_QUERY query,
         {
             *outTargetSource = NULL;
         }
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbQueryJoin(HDB_QUERY query,
+    HDB_SOURCE fromSource,
+    const char* targetDatasetName,
+    int joinType,
+    HDB_SOURCE* outTargetSource)
+{
+    if (outTargetSource != NULL)
+    {
+        *outTargetSource = NULL;
+    }
+    try
+    {
+        return HdbQueryJoinImpl(query, fromSource, targetDatasetName, joinType, outTargetSource);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (outTargetSource != NULL)
+        {
+            *outTargetSource = NULL;
+        }
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        if (outTargetSource != NULL)
+        {
+            *outTargetSource = NULL;
+        }
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbQueryJoinOnCondition(HDB_QUERY query, HDB_SOURCE targetSource, int conditionId)
+{
+    try
+    {
+        return HdbQueryJoinOnConditionImpl(query, targetSource, conditionId);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
         return HdbDllReturnQueryException(query);
     }
 }
@@ -2361,6 +2460,46 @@ int HDB_CALL HdbQueryConditionValue(HDB_QUERY query,
     try
     {
         return HdbQueryConditionValueImpl(query, source, fieldName, op, valueType, valueText, outConditionId);
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (outConditionId != NULL)
+        {
+            *outConditionId = -1;
+        }
+        return HdbDllReturnQueryBadAlloc(query);
+    }
+    catch (...)
+    {
+        if (outConditionId != NULL)
+        {
+            *outConditionId = -1;
+        }
+        return HdbDllReturnQueryException(query);
+    }
+}
+
+int HDB_CALL HdbQueryConditionField(HDB_QUERY query,
+    HDB_SOURCE leftSource,
+    const char* leftFieldName,
+    int op,
+    HDB_SOURCE rightSource,
+    const char* rightFieldName,
+    int* outConditionId)
+{
+    if (outConditionId != NULL)
+    {
+        *outConditionId = -1;
+    }
+    try
+    {
+        return HdbQueryConditionFieldImpl(query,
+            leftSource,
+            leftFieldName,
+            op,
+            rightSource,
+            rightFieldName,
+            outConditionId);
     }
     catch (const std::bad_alloc&)
     {

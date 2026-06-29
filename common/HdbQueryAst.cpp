@@ -57,6 +57,27 @@ static int HdbQueryIsValidJoinType(int joinType)
     return joinType == HDB_JOIN_INNER || joinType == HDB_JOIN_LEFT;
 }
 
+static int HdbQueryIsValidCompareOp(int op)
+{
+    return op == HDB_OP_EQ ||
+        op == HDB_OP_NE ||
+        op == HDB_OP_GT ||
+        op == HDB_OP_GE ||
+        op == HDB_OP_LT ||
+        op == HDB_OP_LE ||
+        op == HDB_OP_LIKE;
+}
+
+static int HdbQueryIsValidFieldCompareOp(int op)
+{
+    return op == HDB_OP_EQ ||
+        op == HDB_OP_NE ||
+        op == HDB_OP_GT ||
+        op == HDB_OP_GE ||
+        op == HDB_OP_LT ||
+        op == HDB_OP_LE;
+}
+
 static int HdbQueryIsValidStatementType(int statementType)
 {
     return statementType == HDB_QST_SELECT ||
@@ -122,10 +143,10 @@ int CHdbQueryAst::AddRootSource(const char* datasetName, int* outSourceId)
     item.sourceType = HDB_SOURCE_ROOT;
     item.parentSourceId = -1;
     item.datasetName = datasetName;
-    item.associationName.clear();
     item.localFieldName.clear();
     item.targetFieldName.clear();
     item.joinType = 0;
+    item.onRootNodeId = -1;
     sources.push_back(item);
     if (outSourceId != NULL)
     {
@@ -134,7 +155,10 @@ int CHdbQueryAst::AddRootSource(const char* datasetName, int* outSourceId)
     return 0;
 }
 
-int CHdbQueryAst::AddJoinSource(int parentSourceId, const char* associationName, int joinType, int* outSourceId)
+int CHdbQueryAst::AddJoinSource(int parentSourceId,
+    const char* targetDatasetName,
+    int joinType,
+    int* outSourceId)
 {
     HdbQuerySourceItem item;
 
@@ -142,11 +166,9 @@ int CHdbQueryAst::AddJoinSource(int parentSourceId, const char* associationName,
     {
         *outSourceId = -1;
     }
-    if (HdbQueryTextEmpty(associationName) || HdbQueryTextContainsDot(associationName))
-    {
-        return -1;
-    }
-    if (!HdbQueryIsValidJoinType(joinType) ||
+    if (HdbQueryTextEmpty(targetDatasetName) ||
+        HdbQueryTextContainsDot(targetDatasetName) ||
+        !HdbQueryIsValidJoinType(joinType) ||
         FindSourceIndex(parentSourceId) < 0 ||
         sources.size() >= HDB_QUERY_MAX_SOURCE_COUNT)
     {
@@ -155,11 +177,11 @@ int CHdbQueryAst::AddJoinSource(int parentSourceId, const char* associationName,
     item.sourceId = (int)sources.size();
     item.sourceType = HDB_SOURCE_JOIN;
     item.parentSourceId = parentSourceId;
-    item.datasetName.clear();
-    item.associationName = associationName;
+    item.datasetName = targetDatasetName;
     item.localFieldName.clear();
     item.targetFieldName.clear();
     item.joinType = joinType;
+    item.onRootNodeId = -1;
     sources.push_back(item);
     if (outSourceId != NULL)
     {
@@ -175,7 +197,8 @@ int CHdbQueryAst::AddJoinSourceOn(int parentSourceId,
     const char* targetFieldName,
     int* outSourceId)
 {
-    HdbQuerySourceItem item;
+    int targetSourceId;
+    int conditionId;
 
     if (outSourceId != NULL)
     {
@@ -190,25 +213,50 @@ int CHdbQueryAst::AddJoinSourceOn(int parentSourceId,
     {
         return -1;
     }
-    if (!HdbQueryIsValidJoinType(joinType) ||
-        FindSourceIndex(parentSourceId) < 0 ||
-        sources.size() >= HDB_QUERY_MAX_SOURCE_COUNT)
+    if (AddJoinSource(parentSourceId, targetDatasetName, joinType, &targetSourceId) != 0)
     {
         return -1;
     }
-    item.sourceId = (int)sources.size();
-    item.sourceType = HDB_SOURCE_JOIN;
-    item.parentSourceId = parentSourceId;
-    item.datasetName = targetDatasetName;
-    item.associationName.clear();
-    item.localFieldName = localFieldName;
-    item.targetFieldName = targetFieldName;
-    item.joinType = joinType;
-    sources.push_back(item);
+    conditionId = -1;
+    if (AddConditionFieldCompare(parentSourceId,
+        localFieldName,
+        HDB_OP_EQ,
+        targetSourceId,
+        targetFieldName,
+        &conditionId) != 0 ||
+        SetJoinOnRoot(targetSourceId, conditionId) != 0)
+    {
+        if (!sources.empty() && sources.back().sourceId == targetSourceId)
+        {
+            sources.pop_back();
+        }
+        if (!conditions.empty() && conditions.back().nodeId == conditionId)
+        {
+            conditions.pop_back();
+        }
+        return -1;
+    }
+    sources[targetSourceId].localFieldName = localFieldName;
+    sources[targetSourceId].targetFieldName = targetFieldName;
     if (outSourceId != NULL)
     {
-        *outSourceId = item.sourceId;
+        *outSourceId = targetSourceId;
     }
+    return 0;
+}
+
+int CHdbQueryAst::SetJoinOnRoot(int sourceId, int nodeId)
+{
+    int sourceIndex;
+
+    sourceIndex = FindSourceIndex(sourceId);
+    if (sourceIndex < 0 ||
+        sources[sourceIndex].sourceType != HDB_SOURCE_JOIN ||
+        FindConditionIndex(nodeId) < 0)
+    {
+        return -1;
+    }
+    sources[sourceIndex].onRootNodeId = nodeId;
     return 0;
 }
 
@@ -309,7 +357,9 @@ int CHdbQueryAst::AddConditionCompare(int sourceId,
     {
         *outNodeId = -1;
     }
-    if (valueText == NULL || AssignFieldRef(item.field, sourceId, fieldName) != 0)
+    if (valueText == NULL ||
+        !HdbQueryIsValidCompareOp(op) ||
+        AssignFieldRef(item.field, sourceId, fieldName) != 0)
     {
         return -1;
     }
@@ -318,6 +368,44 @@ int CHdbQueryAst::AddConditionCompare(int sourceId,
     item.op = op;
     item.valueType = valueType;
     item.valueText = valueText;
+    item.rightField.sourceId = -1;
+    item.rightField.fieldName.clear();
+    item.secondValueText.clear();
+    item.values.clear();
+    item.logic = 0;
+    item.childNodeIds.clear();
+    conditions.push_back(item);
+    if (outNodeId != NULL)
+    {
+        *outNodeId = item.nodeId;
+    }
+    return 0;
+}
+
+int CHdbQueryAst::AddConditionFieldCompare(int leftSourceId,
+    const char* leftFieldName,
+    int op,
+    int rightSourceId,
+    const char* rightFieldName,
+    int* outNodeId)
+{
+    HdbQueryConditionItem item;
+
+    if (outNodeId != NULL)
+    {
+        *outNodeId = -1;
+    }
+    if (!HdbQueryIsValidFieldCompareOp(op) ||
+        AssignFieldRef(item.field, leftSourceId, leftFieldName) != 0 ||
+        AssignFieldRef(item.rightField, rightSourceId, rightFieldName) != 0)
+    {
+        return -1;
+    }
+    item.nodeId = (int)conditions.size();
+    item.conditionType = HDB_QCT_FIELD_COMPARE;
+    item.op = op;
+    item.valueType = 0;
+    item.valueText.clear();
     item.secondValueText.clear();
     item.values.clear();
     item.logic = 0;
@@ -347,6 +435,8 @@ int CHdbQueryAst::AddConditionNull(int sourceId, const char* fieldName, int isNo
     item.op = isNotNull ? 1 : 0;
     item.valueType = 0;
     item.valueText.clear();
+    item.rightField.sourceId = -1;
+    item.rightField.fieldName.clear();
     item.secondValueText.clear();
     item.values.clear();
     item.logic = 0;
@@ -381,6 +471,8 @@ int CHdbQueryAst::AddConditionBetween(int sourceId,
     item.op = 0;
     item.valueType = valueType;
     item.valueText = beginText;
+    item.rightField.sourceId = -1;
+    item.rightField.fieldName.clear();
     item.secondValueText = endText;
     item.values.clear();
     item.logic = 0;
@@ -414,6 +506,8 @@ int CHdbQueryAst::AddConditionIn(int sourceId,
     item.op = 0;
     item.valueType = valueType;
     item.valueText.clear();
+    item.rightField.sourceId = -1;
+    item.rightField.fieldName.clear();
     item.secondValueText.clear();
     item.values = values;
     item.logic = 0;
@@ -453,6 +547,8 @@ int CHdbQueryAst::AddConditionGroup(int logic,
     item.op = 0;
     item.valueType = 0;
     item.valueText.clear();
+    item.rightField.sourceId = -1;
+    item.rightField.fieldName.clear();
     item.secondValueText.clear();
     item.values.clear();
     item.logic = logic;

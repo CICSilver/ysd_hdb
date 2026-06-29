@@ -1,5 +1,4 @@
-﻿#include "../common/hdb_ini.h"
-#include "../svr/HdbDatasetRegistry.h"
+﻿#include "../svr/HdbDatasetRegistry.h"
 #include "../svr/HdbPgAdapter.h"
 
 #ifndef _CRT_SECURE_NO_WARNINGS
@@ -41,7 +40,6 @@
 struct HdbCodegenOptions
 {
     std::string connInfo;
-    std::string configPath;
     std::string outDir;
     std::string schemaName;
     int showHelp;
@@ -69,15 +67,6 @@ struct HdbCodegenDataset
     int missingPolicy;
     std::vector<std::string> physicalTables;
     std::vector<HdbCodegenColumn> columns;
-};
-
-struct HdbCodegenAssociation
-{
-    std::string owner;
-    std::string name;
-    std::string target;
-    std::string ownerField;
-    std::string targetField;
 };
 
 static std::string HdbToLower(const std::string& text)
@@ -253,7 +242,7 @@ static int HdbFindProjectRoot(std::string& outRoot)
     dir = HdbGetCurrentDir();
     while (!dir.empty())
     {
-        if (HdbFileExists(HdbJoinPath(dir, "common/hdb_ini.h")) &&
+        if (HdbFileExists(HdbJoinPath(dir, "common/HdbCommon.h")) &&
             HdbFileExists(HdbJoinPath(dir, "ysd_hdb_meta_codegen/ysd_hdb_meta_codegen.vcxproj")))
         {
             outRoot = dir;
@@ -461,17 +450,6 @@ static std::string HdbDatasetNameFromTable(const std::string& tableName)
         return tableName.substr(4);
     }
     return tableName;
-}
-
-static std::string HdbDatasetNameFromAssociationTable(const std::string& tableName)
-{
-    std::string tablePrefix;
-
-    if (HdbIsDayShardTable(tableName, tablePrefix))
-    {
-        return HdbDatasetNameFromTable(tablePrefix);
-    }
-    return HdbDatasetNameFromTable(tableName);
 }
 
 static int HdbMapColumnType(HdbCodegenColumn& column, std::string& error)
@@ -769,150 +747,6 @@ static int HdbReadSchema(CHdbPgAdapter& adapter,
     return 1;
 }
 
-static const char* HdbRequireValue(const HdbIniSection* section, const char* key, std::string& error)
-{
-    const char* value;
-
-    if (section == NULL)
-    {
-        error = "association section is missing";
-        return NULL;
-    }
-    value = section->GetValue(key);
-    if (value == NULL || value[0] == '\0')
-    {
-        error = std::string("association key is missing: ") + key;
-        return NULL;
-    }
-    return value;
-}
-
-static int HdbReadAssociations(const std::string& configPath,
-    std::vector<HdbCodegenAssociation>& associations,
-    std::string& error)
-{
-    CHdbIniDocument doc;
-    int ret;
-    int index;
-
-    associations.clear();
-    if (!HdbFileExists(configPath))
-    {
-        std::cout << "config not found, associations skipped: " << configPath << std::endl;
-        return 1;
-    }
-
-    ret = doc.Load(configPath.c_str());
-    if (ret != HDB_INI_OK)
-    {
-        std::ostringstream out;
-        out << "load config failed at line " << doc.GetLastErrorLine() << ": " << doc.GetLastError();
-        error = out.str();
-        return 0;
-    }
-
-    index = doc.FindFirstSection("association");
-    while (index >= 0)
-    {
-        HdbCodegenAssociation association;
-        const HdbIniSection* section;
-        const char* value;
-
-        section = doc.GetSection(index);
-        value = HdbRequireValue(section, "owner_table", error);
-        if (value == NULL)
-        {
-            return 0;
-        }
-        if (!HdbIsNameText(value))
-        {
-            error = "association owner_table is invalid";
-            return 0;
-        }
-        association.owner = HdbDatasetNameFromAssociationTable(value);
-        value = HdbRequireValue(section, "name", error);
-        if (value == NULL)
-        {
-            return 0;
-        }
-        association.name = value;
-        value = HdbRequireValue(section, "target_table", error);
-        if (value == NULL)
-        {
-            return 0;
-        }
-        if (!HdbIsNameText(value))
-        {
-            error = "association target_table is invalid";
-            return 0;
-        }
-        association.target = HdbDatasetNameFromAssociationTable(value);
-        value = HdbRequireValue(section, "owner_field", error);
-        if (value == NULL)
-        {
-            return 0;
-        }
-        association.ownerField = value;
-        value = HdbRequireValue(section, "target_field", error);
-        if (value == NULL)
-        {
-            return 0;
-        }
-        association.targetField = value;
-
-        if (!HdbIsNameText(association.owner.c_str()) ||
-            !HdbIsNameText(association.name.c_str()) ||
-            !HdbIsNameText(association.target.c_str()) ||
-            !HdbIsNameText(association.ownerField.c_str()) ||
-            !HdbIsNameText(association.targetField.c_str()))
-        {
-            error = "association contains invalid name text";
-            return 0;
-        }
-        associations.push_back(association);
-        index = doc.FindNextSection("association", index + 1);
-    }
-    return 1;
-}
-
-static int HdbValidateAssociations(const std::vector<HdbCodegenDataset>& datasets,
-    const std::vector<HdbCodegenAssociation>& associations,
-    std::string& error)
-{
-    int i;
-    int j;
-
-    for (i = 0; i < (int)associations.size(); ++i)
-    {
-        int ownerIndex;
-        int targetIndex;
-
-        for (j = i + 1; j < (int)associations.size(); ++j)
-        {
-            if (associations[i].owner == associations[j].owner &&
-                associations[i].name == associations[j].name)
-            {
-                error = "duplicate association: " + associations[i].owner + "." + associations[i].name;
-                return 0;
-            }
-        }
-        ownerIndex = HdbFindDataset(datasets, associations[i].owner);
-        targetIndex = HdbFindDataset(datasets, associations[i].target);
-        if (ownerIndex < 0 || targetIndex < 0)
-        {
-            error = "association dataset is missing: " + associations[i].owner + "." + associations[i].name;
-            return 0;
-        }
-        if (HdbFindColumn(datasets[ownerIndex], associations[i].ownerField) < 0 ||
-            HdbFindColumn(datasets[targetIndex], associations[i].targetField) < 0)
-        {
-            error = "association field is missing: " + associations[i].owner + "." + associations[i].name;
-            return 0;
-        }
-    }
-    return 1;
-}
-
 static std::string HdbFieldFlagsText(const HdbCodegenColumn& column)
 {
     if (column.isPk)
@@ -1026,12 +860,11 @@ static void HdbAppendGeneratedHeader(std::ostringstream& out)
     out << "#define YSD_HDB_GENERATED_META_H\n\n";
     out << "#include \"../svr/HdbDatasetRegistry.h\"\n\n";
     out << "const HdbDatasetDef* HdbGetGeneratedDatasets(int* outCount);\n";
-    out << "const HdbAssociationDef* HdbGetGeneratedAssociations(int* outCount);\n\n";
+    out << "\n";
     out << "#endif\n";
 }
 
 static void HdbAppendGeneratedSource(const std::vector<HdbCodegenDataset>& datasets,
-    const std::vector<HdbCodegenAssociation>& associations,
     std::ostringstream& out)
 {
     int i;
@@ -1119,27 +952,6 @@ static void HdbAppendGeneratedSource(const std::vector<HdbCodegenDataset>& datas
     }
     out << "};\n\n";
 
-    if (!associations.empty())
-    {
-        out << "static HdbAssociationDef g_hdbGeneratedAssociations[] =\n";
-        out << "{\n";
-        for (i = 0; i < (int)associations.size(); ++i)
-        {
-            out << "    { "
-                << HdbQuote(associations[i].owner) << ", "
-                << HdbQuote(associations[i].name) << ", "
-                << HdbQuote(associations[i].target) << ", "
-                << HdbQuote(associations[i].ownerField) << ", "
-                << HdbQuote(associations[i].targetField) << " }";
-            if (i + 1 < (int)associations.size())
-            {
-                out << ",";
-            }
-            out << "\n";
-        }
-        out << "};\n\n";
-    }
-
     out << "const HdbDatasetDef* HdbGetGeneratedDatasets(int* outCount)\n";
     out << "{\n";
     out << "    if (outCount != NULL)\n";
@@ -1147,24 +959,6 @@ static void HdbAppendGeneratedSource(const std::vector<HdbCodegenDataset>& datas
     out << "        *outCount = (int)HDB_ARRAY_COUNT(g_hdbGeneratedDatasets);\n";
     out << "    }\n";
     out << "    return g_hdbGeneratedDatasets;\n";
-    out << "}\n\n";
-
-    out << "const HdbAssociationDef* HdbGetGeneratedAssociations(int* outCount)\n";
-    out << "{\n";
-    out << "    if (outCount != NULL)\n";
-    out << "    {\n";
-    if (associations.empty())
-    {
-        out << "        *outCount = 0;\n";
-        out << "    }\n";
-        out << "    return NULL;\n";
-    }
-    else
-    {
-        out << "        *outCount = (int)HDB_ARRAY_COUNT(g_hdbGeneratedAssociations);\n";
-        out << "    }\n";
-        out << "    return g_hdbGeneratedAssociations;\n";
-    }
     out << "}\n";
 }
 
@@ -1294,50 +1088,8 @@ static int HdbWriteTextFile(const std::string& path, const std::string& text, st
     return 1;
 }
 
-static void HdbAppendConfigTemplate(std::ostringstream& out)
-{
-    HdbAppendTextUtf8(out, "# ysd_hdb 元数据生成器附加配置\n");
-    HdbAppendTextUtf8(out, "# 该文件只维护需要显式命名的联查关系\n");
-    HdbAppendTextUtf8(out, "# 一个 [association] 表示一条可显式 JOIN 的命名关联\n");
-    HdbAppendTextUtf8(out, "# owner_table 和 target_table 填真实表名，生成器会自动转成内部 dataset 名\n");
-    HdbAppendTextUtf8(out, "# 日分表只需要写表名前缀，例如 hdb_alarm，不要写 hdb_alarm_20260612\n");
-    HdbAppendTextUtf8(out, "# 关联条件固定表示为 owner_table.owner_field = target_table.target_field\n");
-    HdbAppendTextUtf8(out, "# JOIN 类型由调用方选择，例如 LeftJoin 会生成 left join，InnerJoin 会生成 inner join\n");
-    HdbAppendTextUtf8(out, "# 示例\n");
-    out << "#\n";
-    out << "# [association]\n";
-    out << "# owner_table=hdb_record\n";
-    out << "# name=creator\n";
-    out << "# target_table=hdb_user\n";
-    out << "# owner_field=creator_id\n";
-    out << "# target_field=id\n";
-    out << "#\n";
-    HdbAppendTextUtf8(out, "# 如果调用方从 record 出发调用 LeftJoin(recordSource, \"creator\")\n");
-    HdbAppendTextUtf8(out, "# 生成的 JOIN 条件等价于\n");
-    out << "# left join hdb_user s1 on s0.creator_id = s1.id\n";
-    HdbAppendTextUtf8(out, "# 其中 s0 是 hdb_record 的 SQL alias，s1 是 hdb_user 的 SQL alias\n");
-}
-
-static int HdbEnsureConfigFile(const std::string& configPath, std::string& error)
-{
-    std::ostringstream out;
-
-    if (HdbFileExists(configPath))
-    {
-        return 1;
-    }
-    HdbAppendConfigTemplate(out);
-    if (!HdbWriteTextFile(configPath, out.str(), error))
-    {
-        return 0;
-    }
-    std::cout << "created config template: " << configPath << std::endl;
-    return 1;
-}
-
 static int HdbWriteGeneratedFiles(const HdbCodegenOptions& options,
     const std::vector<HdbCodegenDataset>& datasets,
-    const std::vector<HdbCodegenAssociation>& associations,
     std::string& error)
 {
     std::ostringstream header;
@@ -1354,7 +1106,7 @@ static int HdbWriteGeneratedFiles(const HdbCodegenOptions& options,
     }
 
     HdbAppendGeneratedHeader(header);
-    HdbAppendGeneratedSource(datasets, associations, source);
+    HdbAppendGeneratedSource(datasets, source);
     HdbAppendGeneratedDslHeader(datasets, dslHeader);
 
     headerPath = HdbJoinPath(options.outDir, "HdbGeneratedMeta.h");
@@ -1378,13 +1130,11 @@ static int HdbWriteGeneratedFiles(const HdbCodegenOptions& options,
 static void HdbPrintUsage()
 {
     std::cout
-        << "usage: ysd_hdb_meta_codegen [--conn connInfo] [--config path] [--out dir] [--schema name]\n"
+        << "usage: ysd_hdb_meta_codegen [--conn connInfo] [--out dir] [--schema name]\n"
         << "defaults:\n"
         << "  --conn   HDB_PG_CONNINFO or local postgres default\n"
-        << "  --config <project-root>\\hdb_codegen.ini\n"
         << "  --out    <project-root>\\GeneratedMetaFiles\n"
-        << "  --schema public\n"
-        << "missing config file will be created before database connection\n";
+        << "  --schema public\n";
 }
 
 static int HdbParseArgs(int argc, char** argv, HdbCodegenOptions& options, std::string& error)
@@ -1398,7 +1148,6 @@ static int HdbParseArgs(int argc, char** argv, HdbCodegenOptions& options, std::
         root = HdbGetCurrentDir();
     }
     options.schemaName = "public";
-    options.configPath = HdbJoinPath(root, "hdb_codegen.ini");
     options.outDir = HdbJoinPath(root, "GeneratedMetaFiles");
     options.showHelp = 0;
 
@@ -1430,15 +1179,6 @@ static int HdbParseArgs(int argc, char** argv, HdbCodegenOptions& options, std::
                 return 0;
             }
             options.connInfo = argv[++i];
-        }
-        else if (arg == "--config")
-        {
-            if (i + 1 >= argc)
-            {
-                error = "missing value for --config";
-                return 0;
-            }
-            options.configPath = argv[++i];
         }
         else if (arg == "--out")
         {
@@ -1472,7 +1212,6 @@ int main(int argc, char** argv)
     HdbCodegenOptions options;
     CHdbPgAdapter adapter;
     std::vector<HdbCodegenDataset> datasets;
-    std::vector<HdbCodegenAssociation> associations;
     std::string error;
     int ret;
 
@@ -1487,12 +1226,6 @@ int main(int argc, char** argv)
         HdbPrintUsage();
         return 0;
     }
-    if (!HdbEnsureConfigFile(options.configPath, error))
-    {
-        std::cerr << "create config template failed: " << error << std::endl;
-        return 2;
-    }
-
     ret = adapter.Open(options.connInfo.c_str());
     if (ret != HDB_OK)
     {
@@ -1504,24 +1237,13 @@ int main(int argc, char** argv)
         std::cerr << "read schema failed: " << error << std::endl;
         return 4;
     }
-    if (!HdbReadAssociations(options.configPath, associations, error))
-    {
-        std::cerr << "read association config failed: " << error << std::endl;
-        return 5;
-    }
-    if (!HdbValidateAssociations(datasets, associations, error))
-    {
-        std::cerr << "validate association config failed: " << error << std::endl;
-        return 6;
-    }
-    if (!HdbWriteGeneratedFiles(options, datasets, associations, error))
+    if (!HdbWriteGeneratedFiles(options, datasets, error))
     {
         std::cerr << "write generated files failed: " << error << std::endl;
         return 7;
     }
 
     std::cout << "generated datasets: " << datasets.size() << std::endl;
-    std::cout << "generated associations: " << associations.size() << std::endl;
     std::cout << "output directory: " << options.outDir << std::endl;
     return 0;
 }

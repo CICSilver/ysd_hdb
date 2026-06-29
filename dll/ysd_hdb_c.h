@@ -76,12 +76,6 @@ HDB_API int HDB_CALL HdbQuerySetStatementType(HDB_QUERY query, int statementType
 HDB_API int HDB_CALL HdbQueryFrom(HDB_QUERY query,
     const char* datasetName,
     HDB_SOURCE* outRootSource);
-// 通过 parent source 的 Association 显式创建 JOIN source，joinType 取 HdbJoinType
-HDB_API int HDB_CALL HdbQueryJoin(HDB_QUERY query,
-    HDB_SOURCE fromSource,
-    const char* associationName,
-    int joinType,
-    HDB_SOURCE* outTargetSource);
 // 通过显式 ON 字段创建 JOIN source，targetDatasetName 是逻辑数据集名
 HDB_API int HDB_CALL HdbQueryJoinOn(HDB_QUERY query,
     HDB_SOURCE fromSource,
@@ -90,6 +84,14 @@ HDB_API int HDB_CALL HdbQueryJoinOn(HDB_QUERY query,
     const char* localFieldName,
     const char* targetFieldName,
     HDB_SOURCE* outTargetSource);
+// 创建 JOIN source，ON 条件通过 HdbQueryJoinOnCondition 绑定
+HDB_API int HDB_CALL HdbQueryJoin(HDB_QUERY query,
+    HDB_SOURCE fromSource,
+    const char* targetDatasetName,
+    int joinType,
+    HDB_SOURCE* outTargetSource);
+// 绑定 JOIN 的 ON 条件树根节点，conditionId 来自 HdbQueryCondition* 接口
+HDB_API int HDB_CALL HdbQueryJoinOnCondition(HDB_QUERY query, HDB_SOURCE targetSource, int conditionId);
 // 查询时间范围使用 epoch milliseconds，SERVER 侧按左闭右开范围拼条件
 HDB_API int HDB_CALL HdbQueryTimeRange(HDB_QUERY query, HdbInt64 beginMs, HdbInt64 endMs);
 // select 字段必须属于传入 source，不接受点号路径
@@ -107,6 +109,13 @@ HDB_API int HDB_CALL HdbQueryConditionValue(HDB_QUERY query,
     int op,
     int valueType,
     const char* valueText,
+    int* outConditionId);
+HDB_API int HDB_CALL HdbQueryConditionField(HDB_QUERY query,
+    HDB_SOURCE leftSource,
+    const char* leftFieldName,
+    int op,
+    HDB_SOURCE rightSource,
+    const char* rightFieldName,
     int* outConditionId);
 HDB_API int HDB_CALL HdbQueryConditionNull(HDB_QUERY query,
     HDB_SOURCE source,

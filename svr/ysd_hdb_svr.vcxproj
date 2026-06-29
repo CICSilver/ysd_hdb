@@ -147,6 +147,7 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\GeneratedMetaFiles\HdbGeneratedMeta.cpp" />
     <ClCompile Include="..\common\HdbIpcProtocol.cpp" />
     <ClCompile Include="..\common\HdbIpcResultCodec.cpp" />
     <ClCompile Include="..\common\HdbIpcSocket.cpp" />
@@ -165,6 +166,7 @@
     <ClCompile Include="ysd_hdb_svr.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\GeneratedMetaFiles\HdbGeneratedMeta.h" />
     <ClInclude Include="..\common\HdbCommon.h" />
     <ClInclude Include="..\common\HdbIpcProtocol.h" />
     <ClInclude Include="..\common\HdbIpcResultCodec.h" />
@@ -184,7 +186,17 @@
     <ClInclude Include="HdbQuerySqlBuilder.h" />
     <ClInclude Include="HdbShardRouter.h" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ysd_hdb_meta_codegen\ysd_hdb_meta_codegen.vcxproj">
+      <Project>{1b028ed8-21c9-4fb6-8cc2-2a3b28718127}</Project>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="RunHdbMetaCodegen" BeforeTargets="ClCompile">
+    <Exec Command="if exist &quot;$(OutDir)ysd_hdb_meta_codegen.exe&quot; (&quot;$(OutDir)ysd_hdb_meta_codegen.exe&quot;) else (&quot;$(ProjectDir)..\ysd_hdb_meta_codegen\$(Configuration)\ysd_hdb_meta_codegen.exe&quot;)" />
+  </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
 </Project>
