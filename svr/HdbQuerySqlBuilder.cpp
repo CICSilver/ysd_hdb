@@ -9,6 +9,12 @@
 
 #include <sstream>
 
+#ifdef _WIN32
+#define HDB_INT64_MAX_VALUE _I64_MAX
+#else
+#define HDB_INT64_MAX_VALUE LLONG_MAX
+#endif
+
 static int HdbBuilderLocalTime(struct tm* outTm, const time_t* inTime)
 {
 #ifdef _WIN32
@@ -106,6 +112,7 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
     std::vector<ResolvedField> conditionFields;
     std::vector<ResolvedField> orderFields;
     std::vector<std::string> rootColumns;
+    RouteTimeRange routeRange;
     std::string sourceSql;
     std::string joinSql;
     std::string whereSql;
@@ -150,11 +157,6 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
         SetLastError("root source is missing");
         return HDB_ERR_PARAM;
     }
-    if (rootSource->dataset->shard.shardType == HDB_SHARD_DAY && !ast.hasTimeRange)
-    {
-        SetLastError("day shard query requires time range");
-        return HDB_ERR_QUERY_NEED_TIME_RANGE;
-    }
     ret = ResolveSelectFields(ast, sources, selectFields);
     if (ret != HDB_OK)
     {
@@ -175,12 +177,17 @@ int CHdbQuerySqlBuilder::BuildSelect(const CHdbQueryAst& ast, HdbBuiltQuery& out
     {
         return ret;
     }
+    ret = ResolveRouteTimeRange(ast, *rootSource, sources, whereFields, routeRange);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
     ret = CollectRootColumns(ast, sources, selectFields, whereFields, conditionFields, orderFields, rootColumns);
     if (ret != HDB_OK)
     {
         return ret;
     }
-    ret = BuildRootSource(ast, *rootSource, rootColumns, whereFields, outQuery, sourceSql);
+    ret = BuildRootSource(ast, *rootSource, &routeRange, rootColumns, whereFields, outQuery, sourceSql);
     if (ret != HDB_OK)
     {
         return ret;
@@ -701,6 +708,7 @@ const CHdbQuerySqlBuilder::ResolvedSource* CHdbQuerySqlBuilder::FindResolvedSour
 
 int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
     const ResolvedSource& rootSource,
+    const RouteTimeRange* routeRange,
     const std::vector<std::string>& rootColumns,
     const std::vector<ResolvedField>& whereFields,
     HdbBuiltQuery& outQuery,
@@ -717,16 +725,32 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
     const HdbFieldDef* routeField;
 
     outSource.clear();
-    ret = m_router.ResolveQueryTables(*rootSource.dataset, ast.beginMs, ast.endMs, tableNames);
+    if (rootSource.dataset->shard.shardType != HDB_SHARD_DAY)
+    {
+        ret = m_router.ResolveQueryTables(*rootSource.dataset, 0, 1, tableNames);
+        if (ret != HDB_OK)
+        {
+            SetLastError(m_router.GetLastError());
+            return ret;
+        }
+        outSource = tableNames[0] + " " + rootSource.sqlAlias;
+        return HDB_OK;
+    }
+    if (routeRange == NULL)
+    {
+        SetLastError("day shard query requires route time condition");
+        return HDB_ERR_QUERY_NEED_TIME_RANGE;
+    }
+    ret = RequireRouteTimeRange(*routeRange);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    ret = m_router.ResolveQueryTables(*rootSource.dataset, routeRange->beginMs, routeRange->endMs, tableNames);
     if (ret != HDB_OK)
     {
         SetLastError(m_router.GetLastError());
         return ret;
-    }
-    if (rootSource.dataset->shard.shardType != HDB_SHARD_DAY)
-    {
-        outSource = tableNames[0] + " " + rootSource.sqlAlias;
-        return HDB_OK;
     }
     if (rootColumns.empty())
     {
@@ -739,8 +763,8 @@ int CHdbQuerySqlBuilder::BuildRootSource(const CHdbQueryAst& ast,
         SetLastError("route field is not found");
         return HDB_ERR_SHARD_DEF;
     }
-    beginParam = AddParam(outQuery, FormatTimestampMs((HdbInt64)ast.beginMs));
-    endParam = AddParam(outQuery, FormatTimestampMs((HdbInt64)ast.endMs));
+    beginParam = AddParam(outQuery, FormatTimestampMs((HdbInt64)routeRange->beginMs));
+    endParam = AddParam(outQuery, FormatTimestampMs((HdbInt64)routeRange->endMs));
     // 对日分片 root 字段的 where 下推到每个分片子查询
     for (i = 0; i < whereFields.size(); ++i)
     {
@@ -1387,7 +1411,7 @@ int CHdbQuerySqlBuilder::BuildInsert(const CHdbQueryAst& ast,
         SetLastError("insert statement cannot contain where");
         return HDB_ERR_QUERY_RANGE;
     }
-    ret = ResolveDmlTableName(ast, rootSource, setFields, tableName);
+    ret = ResolveDmlTableName(ast, rootSource, setFields, NULL, tableName);
     if (ret != HDB_OK)
     {
         return ret;
@@ -1453,6 +1477,8 @@ int CHdbQuerySqlBuilder::BuildUpdate(const CHdbQueryAst& ast,
     HdbBuiltQuery& outQuery)
 {
     std::vector<ResolvedSource> sources;
+    std::vector<ResolvedField> whereFields;
+    RouteTimeRange routeRange;
     std::string tableName;
     std::string whereSql;
     std::ostringstream sql;
@@ -1464,8 +1490,23 @@ int CHdbQuerySqlBuilder::BuildUpdate(const CHdbQueryAst& ast,
         SetLastError("update statement has no set fields");
         return HDB_ERR_PARAM;
     }
+    if (ast.wheres.empty() && ast.whereRootNodeId < 0)
+    {
+        SetLastError("update statement requires where");
+        return HDB_ERR_QUERY_RANGE;
+    }
     sources.push_back(rootSource);
-    ret = ResolveDmlTableName(ast, rootSource, setFields, tableName);
+    ret = ResolveWhereFields(ast, sources, whereFields);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    ret = ResolveRouteTimeRange(ast, rootSource, sources, whereFields, routeRange);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    ret = ResolveDmlTableName(ast, rootSource, setFields, &routeRange, tableName);
     if (ret != HDB_OK)
     {
         return ret;
@@ -1511,12 +1552,17 @@ int CHdbQuerySqlBuilder::BuildUpdate(const CHdbQueryAst& ast,
         }
         sql << setFields[i].field->columnName << " = " << Placeholder(paramIndex);
     }
-    ret = BuildWhere(ast, rootSource, sources, std::vector<ResolvedField>(), outQuery, whereSql);
+    ret = BuildWhere(ast, rootSource, sources, whereFields, outQuery, whereSql);
     if (ret != HDB_OK)
     {
         return ret;
     }
-    if (!whereSql.empty())
+    if (whereSql.empty())
+    {
+        SetLastError("update statement requires where");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    else
     {
         sql << " where " << whereSql;
     }
@@ -1530,6 +1576,8 @@ int CHdbQuerySqlBuilder::BuildDelete(const CHdbQueryAst& ast,
 {
     std::vector<ResolvedSource> sources;
     std::vector<ResolvedField> setFields;
+    std::vector<ResolvedField> whereFields;
+    RouteTimeRange routeRange;
     std::string tableName;
     std::string whereSql;
     std::ostringstream sql;
@@ -1540,19 +1588,39 @@ int CHdbQuerySqlBuilder::BuildDelete(const CHdbQueryAst& ast,
         SetLastError("delete statement cannot contain set fields");
         return HDB_ERR_QUERY_RANGE;
     }
+    if (ast.wheres.empty() && ast.whereRootNodeId < 0)
+    {
+        SetLastError("delete statement requires where");
+        return HDB_ERR_QUERY_RANGE;
+    }
     sources.push_back(rootSource);
-    ret = ResolveDmlTableName(ast, rootSource, setFields, tableName);
+    ret = ResolveWhereFields(ast, sources, whereFields);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    ret = ResolveRouteTimeRange(ast, rootSource, sources, whereFields, routeRange);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    ret = ResolveDmlTableName(ast, rootSource, setFields, &routeRange, tableName);
     if (ret != HDB_OK)
     {
         return ret;
     }
     sql << "delete from " << tableName << " " << rootSource.sqlAlias;
-    ret = BuildWhere(ast, rootSource, sources, std::vector<ResolvedField>(), outQuery, whereSql);
+    ret = BuildWhere(ast, rootSource, sources, whereFields, outQuery, whereSql);
     if (ret != HDB_OK)
     {
         return ret;
     }
-    if (!whereSql.empty())
+    if (whereSql.empty())
+    {
+        SetLastError("delete statement requires where");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    else
     {
         sql << " where " << whereSql;
     }
@@ -1560,12 +1628,313 @@ int CHdbQuerySqlBuilder::BuildDelete(const CHdbQueryAst& ast,
     return HDB_OK;
 }
 
+void CHdbQuerySqlBuilder::InitRouteTimeRange(RouteTimeRange& range) const
+{
+    range.hasBegin = 0;
+    range.beginMs = 0;
+    range.hasEnd = 0;
+    range.endMs = 0;
+}
+
+int CHdbQuerySqlBuilder::ResolveRouteTimeRange(const CHdbQueryAst& ast,
+    const ResolvedSource& rootSource,
+    const std::vector<ResolvedSource>& sources,
+    const std::vector<ResolvedField>& whereFields,
+    RouteTimeRange& outRange)
+{
+    int ret;
+
+    InitRouteTimeRange(outRange);
+    if (rootSource.dataset == NULL)
+    {
+        SetLastError("route dataset is missing");
+        return HDB_ERR_PARAM;
+    }
+    if (rootSource.dataset->shard.shardType != HDB_SHARD_DAY)
+    {
+        return HDB_OK;
+    }
+    if (ast.hasTimeRange)
+    {
+        ret = AddRouteTimeBegin(outRange, ast.beginMs);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        ret = AddRouteTimeEnd(outRange, ast.endMs);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+    }
+    ret = CollectRouteRangeFromWhereItems(ast, rootSource, whereFields, outRange);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (ast.whereRootNodeId >= 0)
+    {
+        ret = CollectRouteRangeFromCondition(ast, rootSource, sources, ast.whereRootNodeId, outRange);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+    }
+    return RequireRouteTimeRange(outRange);
+}
+
+int CHdbQuerySqlBuilder::CollectRouteRangeFromWhereItems(const CHdbQueryAst& ast,
+    const ResolvedSource& rootSource,
+    const std::vector<ResolvedField>& whereFields,
+    RouteTimeRange& range)
+{
+    size_t i;
+    int ret;
+
+    for (i = 0; i < whereFields.size() && i < ast.wheres.size(); ++i)
+    {
+        if (whereFields[i].sourceId != 0 ||
+            whereFields[i].field == NULL ||
+            strcmp(whereFields[i].field->fieldName, rootSource.dataset->shard.routeFieldName) != 0)
+        {
+            continue;
+        }
+        if (whereFields[i].field->type != HDB_FT_TIMESTAMP_MS &&
+            whereFields[i].field->type != HDB_FT_INT64)
+        {
+            SetLastError("route field is not int64 timestamp");
+            return HDB_ERR_SHARD_DEF;
+        }
+        ret = ApplyRouteTimeCompare(range,
+            ast.wheres[i].op,
+            ast.wheres[i].valueType,
+            ast.wheres[i].valueText);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+    }
+    return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::CollectRouteRangeFromCondition(const CHdbQueryAst& ast,
+    const ResolvedSource& rootSource,
+    const std::vector<ResolvedSource>& sources,
+    int nodeId,
+    RouteTimeRange& range)
+{
+    const HdbQueryConditionItem* condition;
+    ResolvedField field;
+    int conditionIndex;
+    int ret;
+    size_t i;
+
+    conditionIndex = ast.FindConditionIndex(nodeId);
+    if (conditionIndex < 0)
+    {
+        SetLastError("route condition node is invalid");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    condition = &ast.conditions[conditionIndex];
+    if (condition->conditionType == HDB_QCT_GROUP)
+    {
+        if (condition->logic != HDB_QCL_AND)
+        {
+            return HDB_OK;
+        }
+        for (i = 0; i < condition->childNodeIds.size(); ++i)
+        {
+            ret = CollectRouteRangeFromCondition(ast,
+                rootSource,
+                sources,
+                condition->childNodeIds[i],
+                range);
+            if (ret != HDB_OK)
+            {
+                return ret;
+            }
+        }
+        return HDB_OK;
+    }
+    if (condition->conditionType != HDB_QCT_COMPARE &&
+        condition->conditionType != HDB_QCT_BETWEEN)
+    {
+        return HDB_OK;
+    }
+    ret = ResolveFieldRef(sources, condition->field, field);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    if (field.sourceId != 0 ||
+        field.field == NULL ||
+        strcmp(field.field->fieldName, rootSource.dataset->shard.routeFieldName) != 0)
+    {
+        return HDB_OK;
+    }
+    if (field.field->type != HDB_FT_TIMESTAMP_MS && field.field->type != HDB_FT_INT64)
+    {
+        SetLastError("route field is not int64 timestamp");
+        return HDB_ERR_SHARD_DEF;
+    }
+    if (condition->conditionType == HDB_QCT_COMPARE)
+    {
+        return ApplyRouteTimeCompare(range, condition->op, condition->valueType, condition->valueText);
+    }
+    return ApplyRouteTimeBetween(range,
+        condition->valueType,
+        condition->valueText,
+        condition->secondValueText);
+}
+
+int CHdbQuerySqlBuilder::ApplyRouteTimeCompare(RouteTimeRange& range,
+    int op,
+    int valueType,
+    const std::string& valueText)
+{
+    HdbInt64 value;
+    int ret;
+
+    if (valueType != HDB_QVT_INT64)
+    {
+        SetLastError("route time condition requires int64 value");
+        return HDB_ERR_TYPE_MISMATCH;
+    }
+    ret = HdbBuilderParseInt64Strict(valueText, &value);
+    if (ret != HDB_OK)
+    {
+        SetLastError("route time value is invalid");
+        return ret;
+    }
+    if (op == HDB_OP_EQ)
+    {
+        if (value == HDB_INT64_MAX_VALUE)
+        {
+            SetLastError("route time value is out of range");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        ret = AddRouteTimeBegin(range, value);
+        if (ret != HDB_OK)
+        {
+            return ret;
+        }
+        return AddRouteTimeEnd(range, value + 1);
+    }
+    if (op == HDB_OP_GE)
+    {
+        return AddRouteTimeBegin(range, value);
+    }
+    if (op == HDB_OP_GT)
+    {
+        if (value == HDB_INT64_MAX_VALUE)
+        {
+            SetLastError("route time begin is out of range");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        return AddRouteTimeBegin(range, value + 1);
+    }
+    if (op == HDB_OP_LT)
+    {
+        return AddRouteTimeEnd(range, value);
+    }
+    if (op == HDB_OP_LE)
+    {
+        if (value == HDB_INT64_MAX_VALUE)
+        {
+            SetLastError("route time end is out of range");
+            return HDB_ERR_QUERY_RANGE;
+        }
+        return AddRouteTimeEnd(range, value + 1);
+    }
+    return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::ApplyRouteTimeBetween(RouteTimeRange& range,
+    int valueType,
+    const std::string& beginText,
+    const std::string& endText)
+{
+    HdbInt64 beginValue;
+    HdbInt64 endValue;
+    int ret;
+
+    if (valueType != HDB_QVT_INT64)
+    {
+        SetLastError("route time condition requires int64 value");
+        return HDB_ERR_TYPE_MISMATCH;
+    }
+    if (HdbBuilderParseInt64Strict(beginText, &beginValue) != HDB_OK ||
+        HdbBuilderParseInt64Strict(endText, &endValue) != HDB_OK)
+    {
+        SetLastError("route time value is invalid");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    if (beginValue > endValue || endValue == HDB_INT64_MAX_VALUE)
+    {
+        SetLastError("route time range is invalid");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    ret = AddRouteTimeBegin(range, beginValue);
+    if (ret != HDB_OK)
+    {
+        return ret;
+    }
+    return AddRouteTimeEnd(range, endValue + 1);
+}
+
+int CHdbQuerySqlBuilder::AddRouteTimeBegin(RouteTimeRange& range, HdbInt64 beginMs)
+{
+    if (!range.hasBegin || beginMs > range.beginMs)
+    {
+        range.beginMs = beginMs;
+        range.hasBegin = 1;
+    }
+    if (range.hasEnd && range.beginMs >= range.endMs)
+    {
+        SetLastError("route time range is empty");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::AddRouteTimeEnd(RouteTimeRange& range, HdbInt64 endMs)
+{
+    if (!range.hasEnd || endMs < range.endMs)
+    {
+        range.endMs = endMs;
+        range.hasEnd = 1;
+    }
+    if (range.hasBegin && range.beginMs >= range.endMs)
+    {
+        SetLastError("route time range is empty");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    return HDB_OK;
+}
+
+int CHdbQuerySqlBuilder::RequireRouteTimeRange(const RouteTimeRange& range)
+{
+    if (!range.hasBegin || !range.hasEnd)
+    {
+        SetLastError("day shard query requires route time condition");
+        return HDB_ERR_QUERY_NEED_TIME_RANGE;
+    }
+    if (range.beginMs >= range.endMs)
+    {
+        SetLastError("route time range is empty");
+        return HDB_ERR_QUERY_RANGE;
+    }
+    return HDB_OK;
+}
+
 int CHdbQuerySqlBuilder::ResolveDmlTableName(const CHdbQueryAst& ast,
     const ResolvedSource& rootSource,
     const std::vector<ResolvedField>& setFields,
+    const RouteTimeRange* routeRange,
     std::string& outTableName)
 {
     size_t i;
+    int ret;
 
     outTableName.clear();
     if (rootSource.dataset == NULL)
@@ -1615,16 +1984,20 @@ int CHdbQuerySqlBuilder::ResolveDmlTableName(const CHdbQueryAst& ast,
         SetLastError("insert route field is missing");
         return HDB_ERR_QUERY_NEED_TIME_RANGE;
     }
-    if (!ast.hasTimeRange)
+    if (routeRange == NULL)
     {
-        SetLastError("day sharded dml requires time range");
+        SetLastError("day sharded dml requires route time condition");
         return HDB_ERR_QUERY_NEED_TIME_RANGE;
+    }
+    ret = RequireRouteTimeRange(*routeRange);
+    if (ret != HDB_OK)
+    {
+        return ret;
     }
     {
         std::vector<std::string> tableNames;
-        int ret;
 
-        ret = m_router.ResolveQueryTables(*rootSource.dataset, ast.beginMs, ast.endMs, tableNames);
+        ret = m_router.ResolveQueryTables(*rootSource.dataset, routeRange->beginMs, routeRange->endMs, tableNames);
         if (ret != HDB_OK)
         {
             SetLastError(m_router.GetLastError());

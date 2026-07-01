@@ -440,13 +440,18 @@ static int RunHistoryQuerySmoke(HDB_SESSION session)
     {
         return 1;
     }
-    ret = HdbQueryOrderBy(query, alarmSource, "occur_time", HDB_ORDER_DESC);
-    if (ExpectQueryStep(session, query, ret, "history order time") != 0)
+    ret = HdbQueryWhereInt64(query, alarmSource, "occur_time", HDB_OP_GE, MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0));
+    if (ExpectQueryStep(session, query, ret, "history where time begin") != 0)
     {
         return 1;
     }
-    ret = HdbQueryTimeRange(query, MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 14, 0, 0, 0, 0));
-    if (ExpectQueryStep(session, query, ret, "history time range") != 0)
+    ret = HdbQueryWhereInt64(query, alarmSource, "occur_time", HDB_OP_LT, MakeLocalTimeMs(2026, 6, 14, 0, 0, 0, 0));
+    if (ExpectQueryStep(session, query, ret, "history where time end") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryOrderBy(query, alarmSource, "occur_time", HDB_ORDER_DESC);
+    if (ExpectQueryStep(session, query, ret, "history order time") != 0)
     {
         return 1;
     }
@@ -500,9 +505,11 @@ static int RunDslQuerySmoke(HDB_SESSION session)
         .from(HdbDsl::ALARM)
         .leftJoin(HdbDsl::POINT)
         .on(HdbDsl::ALARM.POINT_ID.eq(HdbDsl::POINT.ID).And(HdbDsl::POINT.NAME.like("point%")))
-        .where(HdbDsl::ALARM.ID.eq((HdbInt64)1).And(HdbDsl::ALARM.POINT_ID.eq(HdbDsl::POINT.ID)))
+        .where(HdbDsl::ALARM.ID.eq((HdbInt64)1)
+            .And(HdbDsl::ALARM.POINT_ID.eq(HdbDsl::POINT.ID))
+            .And(HdbDsl::ALARM.OCCUR_TIME.ge(MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0)))
+            .And(HdbDsl::ALARM.OCCUR_TIME.lt(MakeLocalTimeMs(2026, 6, 13, 0, 0, 0, 0))))
         .orderBy(HdbDsl::ALARM.ID.asc())
-        .timeRange(MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 13, 0, 0, 0, 0))
         .fetch(&result);
     if (ExpectHdbOk(session, ret, "execute dsl query") != 0)
     {
@@ -662,11 +669,6 @@ static int RunTimestampWhereSmoke(HDB_SESSION session)
     {
         return 1;
     }
-    ret = HdbQueryTimeRange(query, MakeLocalTimeMs(2026, 6, 12, 0, 0, 0, 0), MakeLocalTimeMs(2026, 6, 14, 0, 0, 0, 0));
-    if (ExpectQueryStep(session, query, ret, "timestamp time range") != 0)
-    {
-        return 1;
-    }
     ret = HdbQuerySelect(query, alarmSource, "id", "id");
     if (ExpectQueryStep(session, query, ret, "timestamp select id") != 0)
     {
@@ -678,7 +680,12 @@ static int RunTimestampWhereSmoke(HDB_SESSION session)
         return 1;
     }
     ret = HdbQueryWhereInt64(query, alarmSource, "occur_time", HDB_OP_GE, MakeLocalTimeMs(2026, 6, 13, 0, 0, 0, 0));
-    if (ExpectQueryStep(session, query, ret, "timestamp where time") != 0)
+    if (ExpectQueryStep(session, query, ret, "timestamp where time begin") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryWhereInt64(query, alarmSource, "occur_time", HDB_OP_LT, MakeLocalTimeMs(2026, 6, 14, 0, 0, 0, 0));
+    if (ExpectQueryStep(session, query, ret, "timestamp where time end") != 0)
     {
         return 1;
     }
@@ -786,6 +793,7 @@ static int RunServerErrorSmoke(HDB_SESSION session)
     HDB_QUERY query;
     HDB_SOURCE source;
     HDB_RESULT result;
+    int affectedRows;
     int ret;
 
     PrintTestTitle("错误响应", "覆盖 SERVER 返回的查询错误和 DLL 错误映射");
@@ -837,6 +845,63 @@ static int RunServerErrorSmoke(HDB_SESSION session)
     HdbQueryWhereStringEq(query, source, "level", "2");
     ret = HdbQueryExecute(query, &result);
     if (ExpectHdbError(session, ret, HDB_ERR_TYPE_MISMATCH, "where type mismatch") != 0)
+    {
+        HdbQueryFree(query);
+        return 1;
+    }
+    HdbQueryFree(query);
+
+    query = NULL;
+    source = NULL;
+    affectedRows = 0;
+    ret = HdbQueryCreate(session, &query);
+    if (ExpectHdbOk(session, ret, "create update without where query") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQuerySetStatementType(query, HDB_QST_UPDATE);
+    if (ExpectQueryStep(session, query, ret, "set update statement") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryFrom(query, "point", &source);
+    if (ExpectQueryStep(session, query, ret, "from update without where") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQuerySetValue(query, source, "name", HDB_QVT_STRING, "blocked update");
+    if (ExpectQueryStep(session, query, ret, "set update without where value") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryExecuteAffected(query, &affectedRows);
+    if (ExpectHdbError(session, ret, HDB_ERR_QUERY_RANGE, "update without where") != 0)
+    {
+        HdbQueryFree(query);
+        return 1;
+    }
+    HdbQueryFree(query);
+
+    query = NULL;
+    source = NULL;
+    affectedRows = 0;
+    ret = HdbQueryCreate(session, &query);
+    if (ExpectHdbOk(session, ret, "create delete without where query") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQuerySetStatementType(query, HDB_QST_DELETE);
+    if (ExpectQueryStep(session, query, ret, "set delete statement") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryFrom(query, "point", &source);
+    if (ExpectQueryStep(session, query, ret, "from delete without where") != 0)
+    {
+        return 1;
+    }
+    ret = HdbQueryExecuteAffected(query, &affectedRows);
+    if (ExpectHdbError(session, ret, HDB_ERR_QUERY_RANGE, "delete without where") != 0)
     {
         HdbQueryFree(query);
         return 1;

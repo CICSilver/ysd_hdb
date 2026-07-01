@@ -1722,10 +1722,23 @@ inline CHdbDslJoinStep CHdbDslQuery::innerJoin(const CHdbDslTable& table)
     return CHdbDslJoinStep(this, table, HDB_JOIN_INNER);
 }
 
-class CHdbDslDml
+class CHdbDslDmlCore;
+class CHdbDslInsert;
+class CHdbDslUpdateStart;
+class CHdbDslUpdateNeedWhere;
+class CHdbDslDeleteNeedWhere;
+class CHdbDslDmlExecutable;
+
+class CHdbDslDmlCore
 {
 public:
-    explicit CHdbDslDml(HDB_SESSION session)
+    ~CHdbDslDmlCore()
+    {
+        FreeQuery();
+    }
+
+private:
+    explicit CHdbDslDmlCore(HDB_SESSION session)
         : m_session(session),
           m_query(NULL),
           m_rootSource(NULL),
@@ -1737,12 +1750,7 @@ public:
     {
     }
 
-    ~CHdbDslDml()
-    {
-        FreeQuery();
-    }
-
-    CHdbDslDml& Reset(const CHdbDslTable& table, int statementType)
+    CHdbDslDmlCore& Reset(const CHdbDslTable& table, int statementType)
     {
         FreeQuery();
         m_rootSource = NULL;
@@ -1768,7 +1776,7 @@ public:
         return *this;
     }
 
-    CHdbDslDml& set(const CHdbDslField& field, int value)
+    CHdbDslDmlCore& Set(const CHdbDslField& field, int value)
     {
         if (HdbDslIntegerValueTypeForField(field) == HDB_QVT_INT64)
         {
@@ -1777,27 +1785,27 @@ public:
         return SetValue(field, HDB_QVT_INT32, HdbDslIntToText(value));
     }
 
-    CHdbDslDml& set(const CHdbDslField& field, HdbInt64 value)
+    CHdbDslDmlCore& Set(const CHdbDslField& field, HdbInt64 value)
     {
         return SetValue(field, HDB_QVT_INT64, HdbDslInt64ToText(value));
     }
 
-    CHdbDslDml& set(const CHdbDslField& field, double value)
+    CHdbDslDmlCore& Set(const CHdbDslField& field, double value)
     {
         return SetValue(field, HDB_QVT_DOUBLE, HdbDslDoubleToText(value));
     }
 
-    CHdbDslDml& set(const CHdbDslField& field, const char* value)
+    CHdbDslDmlCore& Set(const CHdbDslField& field, const char* value)
     {
         return SetValue(field, HDB_QVT_STRING, value != NULL ? value : "");
     }
 
-    CHdbDslDml& set(const CHdbDslField& field, const std::string& value)
+    CHdbDslDmlCore& Set(const CHdbDslField& field, const std::string& value)
     {
         return SetValue(field, HDB_QVT_STRING, value);
     }
 
-    CHdbDslDml& where(const CHdbDslCondition& condition)
+    CHdbDslDmlCore& Where(const CHdbDslCondition& condition)
     {
         if (m_error == HDB_OK)
         {
@@ -1814,7 +1822,7 @@ public:
         return *this;
     }
 
-    CHdbDslDml& timeRange(HdbInt64 beginMs, HdbInt64 endMs)
+    CHdbDslDmlCore& TimeRange(HdbInt64 beginMs, HdbInt64 endMs)
     {
         if (m_error == HDB_OK)
         {
@@ -1823,7 +1831,7 @@ public:
         return *this;
     }
 
-    int execute(int* affectedRows)
+    int Execute(int* affectedRows)
     {
         int ret;
 
@@ -1855,8 +1863,7 @@ public:
         return m_error;
     }
 
-private:
-    CHdbDslDml& SetValue(const CHdbDslField& field, int valueType, const std::string& valueText)
+    CHdbDslDmlCore& SetValue(const CHdbDslField& field, int valueType, const std::string& valueText)
     {
         if (m_error == HDB_OK)
         {
@@ -2021,8 +2028,8 @@ private:
     }
 
 private:
-    CHdbDslDml(const CHdbDslDml&);
-    CHdbDslDml& operator=(const CHdbDslDml&);
+    CHdbDslDmlCore(const CHdbDslDmlCore&);
+    CHdbDslDmlCore& operator=(const CHdbDslDmlCore&);
 
 private:
     HDB_SESSION m_session;
@@ -2033,6 +2040,256 @@ private:
     int m_hasWhere;
     int m_whereAdded;
     CHdbDslCondition m_where;
+
+    friend class CHdbCreate;
+    friend class CHdbDslInsert;
+    friend class CHdbDslUpdateStart;
+    friend class CHdbDslUpdateNeedWhere;
+    friend class CHdbDslDeleteNeedWhere;
+    friend class CHdbDslDmlExecutable;
+};
+
+class CHdbDslDmlExecutable
+{
+public:
+    CHdbDslDmlExecutable timeRange(HdbInt64 beginMs, HdbInt64 endMs)
+    {
+        m_dml->TimeRange(beginMs, endMs);
+        return *this;
+    }
+
+    int execute(int* affectedRows)
+    {
+        return m_dml->Execute(affectedRows);
+    }
+
+    int GetError() const
+    {
+        return m_dml->GetError();
+    }
+
+private:
+    explicit CHdbDslDmlExecutable(CHdbDslDmlCore* dml)
+        : m_dml(dml)
+    {
+    }
+
+private:
+    CHdbDslDmlCore* m_dml;
+
+    friend class CHdbDslUpdateNeedWhere;
+    friend class CHdbDslDeleteNeedWhere;
+};
+
+class CHdbDslInsert
+{
+public:
+    CHdbDslInsert set(const CHdbDslField& field, int value)
+    {
+        m_dml->Set(field, value);
+        return *this;
+    }
+
+    CHdbDslInsert set(const CHdbDslField& field, HdbInt64 value)
+    {
+        m_dml->Set(field, value);
+        return *this;
+    }
+
+    CHdbDslInsert set(const CHdbDslField& field, double value)
+    {
+        m_dml->Set(field, value);
+        return *this;
+    }
+
+    CHdbDslInsert set(const CHdbDslField& field, const char* value)
+    {
+        m_dml->Set(field, value);
+        return *this;
+    }
+
+    CHdbDslInsert set(const CHdbDslField& field, const std::string& value)
+    {
+        m_dml->Set(field, value);
+        return *this;
+    }
+
+    CHdbDslInsert timeRange(HdbInt64 beginMs, HdbInt64 endMs)
+    {
+        m_dml->TimeRange(beginMs, endMs);
+        return *this;
+    }
+
+    int execute(int* affectedRows)
+    {
+        return m_dml->Execute(affectedRows);
+    }
+
+    int GetError() const
+    {
+        return m_dml->GetError();
+    }
+
+private:
+    explicit CHdbDslInsert(CHdbDslDmlCore* dml)
+        : m_dml(dml)
+    {
+    }
+
+private:
+    CHdbDslDmlCore* m_dml;
+
+    friend class CHdbCreate;
+};
+
+class CHdbDslUpdateNeedWhere
+{
+public:
+    CHdbDslUpdateNeedWhere set(const CHdbDslField& field, int value)
+    {
+        m_dml->Set(field, value);
+        return *this;
+    }
+
+    CHdbDslUpdateNeedWhere set(const CHdbDslField& field, HdbInt64 value)
+    {
+        m_dml->Set(field, value);
+        return *this;
+    }
+
+    CHdbDslUpdateNeedWhere set(const CHdbDslField& field, double value)
+    {
+        m_dml->Set(field, value);
+        return *this;
+    }
+
+    CHdbDslUpdateNeedWhere set(const CHdbDslField& field, const char* value)
+    {
+        m_dml->Set(field, value);
+        return *this;
+    }
+
+    CHdbDslUpdateNeedWhere set(const CHdbDslField& field, const std::string& value)
+    {
+        m_dml->Set(field, value);
+        return *this;
+    }
+
+    CHdbDslUpdateNeedWhere timeRange(HdbInt64 beginMs, HdbInt64 endMs)
+    {
+        m_dml->TimeRange(beginMs, endMs);
+        return *this;
+    }
+
+    CHdbDslDmlExecutable where(const CHdbDslCondition& condition)
+    {
+        m_dml->Where(condition);
+        return CHdbDslDmlExecutable(m_dml);
+    }
+
+    int GetError() const
+    {
+        return m_dml->GetError();
+    }
+
+private:
+    explicit CHdbDslUpdateNeedWhere(CHdbDslDmlCore* dml)
+        : m_dml(dml)
+    {
+    }
+
+private:
+    CHdbDslDmlCore* m_dml;
+
+    friend class CHdbDslUpdateStart;
+};
+
+class CHdbDslUpdateStart
+{
+public:
+    CHdbDslUpdateStart timeRange(HdbInt64 beginMs, HdbInt64 endMs)
+    {
+        m_dml->TimeRange(beginMs, endMs);
+        return *this;
+    }
+
+    CHdbDslUpdateNeedWhere set(const CHdbDslField& field, int value)
+    {
+        m_dml->Set(field, value);
+        return CHdbDslUpdateNeedWhere(m_dml);
+    }
+
+    CHdbDslUpdateNeedWhere set(const CHdbDslField& field, HdbInt64 value)
+    {
+        m_dml->Set(field, value);
+        return CHdbDslUpdateNeedWhere(m_dml);
+    }
+
+    CHdbDslUpdateNeedWhere set(const CHdbDslField& field, double value)
+    {
+        m_dml->Set(field, value);
+        return CHdbDslUpdateNeedWhere(m_dml);
+    }
+
+    CHdbDslUpdateNeedWhere set(const CHdbDslField& field, const char* value)
+    {
+        m_dml->Set(field, value);
+        return CHdbDslUpdateNeedWhere(m_dml);
+    }
+
+    CHdbDslUpdateNeedWhere set(const CHdbDslField& field, const std::string& value)
+    {
+        m_dml->Set(field, value);
+        return CHdbDslUpdateNeedWhere(m_dml);
+    }
+
+    int GetError() const
+    {
+        return m_dml->GetError();
+    }
+
+private:
+    explicit CHdbDslUpdateStart(CHdbDslDmlCore* dml)
+        : m_dml(dml)
+    {
+    }
+
+private:
+    CHdbDslDmlCore* m_dml;
+
+    friend class CHdbCreate;
+};
+
+class CHdbDslDeleteNeedWhere
+{
+public:
+    CHdbDslDeleteNeedWhere timeRange(HdbInt64 beginMs, HdbInt64 endMs)
+    {
+        m_dml->TimeRange(beginMs, endMs);
+        return *this;
+    }
+
+    CHdbDslDmlExecutable where(const CHdbDslCondition& condition)
+    {
+        m_dml->Where(condition);
+        return CHdbDslDmlExecutable(m_dml);
+    }
+
+    int GetError() const
+    {
+        return m_dml->GetError();
+    }
+
+private:
+    explicit CHdbDslDeleteNeedWhere(CHdbDslDmlCore* dml)
+        : m_dml(dml)
+    {
+    }
+
+private:
+    CHdbDslDmlCore* m_dml;
+
+    friend class CHdbCreate;
 };
 
 class CHdbCreate
@@ -2050,19 +2307,22 @@ public:
         return m_query.select(field);
     }
 
-    CHdbDslDml& insertInto(const CHdbDslTable& table)
+    CHdbDslInsert insertInto(const CHdbDslTable& table)
     {
-        return m_dml.Reset(table, HDB_QST_INSERT);
+        m_dml.Reset(table, HDB_QST_INSERT);
+        return CHdbDslInsert(&m_dml);
     }
 
-    CHdbDslDml& update(const CHdbDslTable& table)
+    CHdbDslUpdateStart update(const CHdbDslTable& table)
     {
-        return m_dml.Reset(table, HDB_QST_UPDATE);
+        m_dml.Reset(table, HDB_QST_UPDATE);
+        return CHdbDslUpdateStart(&m_dml);
     }
 
-    CHdbDslDml& deleteFrom(const CHdbDslTable& table)
+    CHdbDslDeleteNeedWhere deleteFrom(const CHdbDslTable& table)
     {
-        return m_dml.Reset(table, HDB_QST_DELETE);
+        m_dml.Reset(table, HDB_QST_DELETE);
+        return CHdbDslDeleteNeedWhere(&m_dml);
     }
 
 private:
@@ -2071,7 +2331,7 @@ private:
 
 private:
     CHdbDslQuery m_query;
-    CHdbDslDml m_dml;
+    CHdbDslDmlCore m_dml;
 };
 
 #endif

@@ -50,6 +50,14 @@ private:
         std::string sqlAlias;         // 字段 SQL 别名
     };
 
+    struct RouteTimeRange
+    {
+        int hasBegin;      // 是否已解析到左边界
+        HdbInt64 beginMs;  // 左闭边界
+        int hasEnd;        // 是否已解析到右边界
+        HdbInt64 endMs;    // 右开边界
+    };
+
     int ResolveSources(const CHdbQueryAst& ast, std::vector<ResolvedSource>& sources);
     int ResolveSelectFields(const CHdbQueryAst& ast,
         const std::vector<ResolvedSource>& sources,
@@ -80,6 +88,7 @@ private:
     const ResolvedSource* FindResolvedSource(const std::vector<ResolvedSource>& sources, int sourceId) const;
     int BuildRootSource(const CHdbQueryAst& ast,
         const ResolvedSource& rootSource,
+        const RouteTimeRange* routeRange,
         const std::vector<std::string>& rootColumns,
         const std::vector<ResolvedField>& whereFields,
         HdbBuiltQuery& outQuery,
@@ -125,7 +134,31 @@ private:
     int ResolveDmlTableName(const CHdbQueryAst& ast,
         const ResolvedSource& rootSource,
         const std::vector<ResolvedField>& setFields,
+        const RouteTimeRange* routeRange,
         std::string& outTableName);
+    void InitRouteTimeRange(RouteTimeRange& range) const;
+    int ResolveRouteTimeRange(const CHdbQueryAst& ast,
+        const ResolvedSource& rootSource,
+        const std::vector<ResolvedSource>& sources,
+        const std::vector<ResolvedField>& whereFields,
+        RouteTimeRange& outRange);
+    int CollectRouteRangeFromWhereItems(const CHdbQueryAst& ast,
+        const ResolvedSource& rootSource,
+        const std::vector<ResolvedField>& whereFields,
+        RouteTimeRange& range);
+    int CollectRouteRangeFromCondition(const CHdbQueryAst& ast,
+        const ResolvedSource& rootSource,
+        const std::vector<ResolvedSource>& sources,
+        int nodeId,
+        RouteTimeRange& range);
+    int ApplyRouteTimeCompare(RouteTimeRange& range, int op, int valueType, const std::string& valueText);
+    int ApplyRouteTimeBetween(RouteTimeRange& range,
+        int valueType,
+        const std::string& beginText,
+        const std::string& endText);
+    int AddRouteTimeBegin(RouteTimeRange& range, HdbInt64 beginMs);
+    int AddRouteTimeEnd(RouteTimeRange& range, HdbInt64 endMs);
+    int RequireRouteTimeRange(const RouteTimeRange& range);
     int AppendFieldExpr(const ResolvedField& field, std::string& outExpr);
     // where 参数值在这里按字段类型转成数据库文本
     int FormatWhereParamValue(const ResolvedField& field,
